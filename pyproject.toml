@@ -1,0 +1,313 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transcriptionist"
+version = "3.0.0"
+description = "Professional sound effects management platform with AI-powered intelligent features"
+readme = "README.md"
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Transcriptionist Team", email = "transcriptionist@example.com"}
+]
+maintainers = [
+    {name = "Transcriptionist Team", email = "transcriptionist@example.com"}
+]
+keywords = [
+    "audio",
+    "sound-effects",
+    "library-management",
+    "gtk4",
+    "libadwaita",
+    "ai",
+    "machine-learning",
+    "audio-classification",
+    "metadata",
+    "freesound"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+    "Typing :: Typed"
+]
+
+dependencies = [
+    # GTK4 and Libadwaita for modern UI
+    "PyGObject>=3.42.0",
+    
+    # Database ORM and migrations
+    "SQLAlchemy>=2.0.0",
+    "alembic>=1.12.0",
+    
+    # Async HTTP client
+    "aiohttp>=3.9.0",
+    
+    # Audio metadata extraction
+    "mutagen>=1.47.0",
+    
+    # Audio analysis and processing
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "numpy>=1.24.0",
+    
+    # Machine learning
+    "scikit-learn>=1.3.0",
+    
+    # Loudness normalization
+    "pyloudnorm>=0.1.1",
+    
+    # File system monitoring
+    "watchdog>=3.0.0",
+    
+    # Additional utilities
+    "aiofiles>=23.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    
+    # Audio playback (replacing GStreamer)
+    "pygame>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+    "hypothesis>=6.82.0",
+    
+    # Code formatting and linting
+    "black>=23.7.0",
+    "isort>=5.12.0",
+    "ruff>=0.1.0",
+    
+    # Type checking
+    "mypy>=1.5.0",
+    "types-aiofiles>=23.0.0",
+    
+    # Documentation
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.3.0",
+    
+    # Development utilities
+    "pre-commit>=3.4.0",
+    "ipython>=8.14.0",
+]
+
+test = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.11.0",
+    "hypothesis>=6.82.0",
+]
+
+docs = [
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.3.0",
+    "myst-parser>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/transcriptionist/transcriptionist-v3"
+Documentation = "https://transcriptionist.readthedocs.io"
+Repository = "https://github.com/transcriptionist/transcriptionist-v3.git"
+Issues = "https://github.com/transcriptionist/transcriptionist-v3/issues"
+Changelog = "https://github.com/transcriptionist/transcriptionist-v3/blob/main/CHANGELOG.md"
+
+[project.scripts]
+transcriptionist = "transcriptionist_v3.__main__:main"
+
+[project.gui-scripts]
+transcriptionist-gui = "transcriptionist_v3.__main__:main"
+
+[project.entry-points."transcriptionist.plugins"]
+# Plugin entry points for extensibility
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["transcriptionist_v3*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+transcriptionist_v3 = [
+    "resources/**/*",
+    "locale/**/*",
+    "data/defaults/**/*",
+]
+
+# Black configuration
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+    | \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+    | runtime
+)/
+'''
+
+# isort configuration
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["transcriptionist_v3"]
+skip = [".venv", "runtime", "build", "dist"]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+
+# Ruff configuration
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+    ".eggs",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "build",
+    "dist",
+    "runtime",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by black)
+    "B008",   # do not perform function calls in argument defaults
+    "C901",   # too complex
+    "ARG001", # unused function argument
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**/*" = ["ARG001", "S101"]
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "silent"
+ignore_missing_imports = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "PyQt6.*",
+    "qfluentwidgets.*",
+    "librosa.*",
+    "soundfile.*",
+    "mutagen.*",
+    "pyloudnorm.*",
+    "sklearn.*",
+    "pygame.*",
+]
+ignore_missing_imports = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+    "-ra",
+    "-q",
+    "--strict-markers",
+    "--strict-config",
+    "-v",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "requires_qt: marks tests that require PyQt6",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["transcriptionist_v3"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/runtime/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+show_missing = true
+precision = 2
+
+[tool.coverage.html]
+directory = "htmlcov"

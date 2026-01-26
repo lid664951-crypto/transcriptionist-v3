@@ -1,0 +1,11 @@
+{
+  "chunk_length_s": null,
+  "feature_extractor_type": "EncodecFeatureExtractor",
+  "feature_size": 1,
+  "overlap": null,
+  "padding_side": "left",
+  "padding_value": 0.0,
+  "processor_class": "MusicgenProcessor",
+  "return_attention_mask": true,
+  "sampling_rate": 32000
+}

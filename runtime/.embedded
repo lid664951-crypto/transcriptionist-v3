@@ -1,0 +1,4 @@
+# This file marks this as an embedded Python runtime
+# Do not delete this file
+version=3.11.9
+created=2026-01-15

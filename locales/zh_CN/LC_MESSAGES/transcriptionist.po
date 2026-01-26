@@ -1,0 +1,431 @@
+# Chinese (Simplified) Translation for Transcriptionist v3
+# Copyright (C) 2026
+# This file is distributed under the same license as the Transcriptionist package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Transcriptionist 3.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-01-16 12:00+0000\n"
+"PO-Revision-Date: 2026-01-16 12:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: Chinese (Simplified)\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+# Application
+msgid "Transcriptionist"
+msgstr "音译家"
+
+msgid "Professional Sound Effects Management"
+msgstr "专业音效管理软件"
+
+# Main Window
+msgid "Library"
+msgstr "音效库"
+
+msgid "Projects"
+msgstr "项目"
+
+msgid "Search"
+msgstr "搜索"
+
+msgid "AI Tools"
+msgstr "AI工具"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Help"
+msgstr "帮助"
+
+# File Operations
+msgid "Open"
+msgstr "打开"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Save As"
+msgstr "另存为"
+
+msgid "Import"
+msgstr "导入"
+
+msgid "Export"
+msgstr "导出"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Exit"
+msgstr "退出"
+
+# Edit Operations
+msgid "Undo"
+msgstr "撤销"
+
+msgid "Redo"
+msgstr "重做"
+
+msgid "Cut"
+msgstr "剪切"
+
+msgid "Copy"
+msgstr "复制"
+
+msgid "Paste"
+msgstr "粘贴"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Select All"
+msgstr "全选"
+
+# Library View
+msgid "Add Folder"
+msgstr "添加文件夹"
+
+msgid "Remove Folder"
+msgstr "移除文件夹"
+
+msgid "Scan Library"
+msgstr "扫描音效库"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Filter"
+msgstr "筛选"
+
+msgid "Sort By"
+msgstr "排序方式"
+
+msgid "Name"
+msgstr "名称"
+
+msgid "Duration"
+msgstr "时长"
+
+msgid "Format"
+msgstr "格式"
+
+msgid "Sample Rate"
+msgstr "采样率"
+
+msgid "Date Added"
+msgstr "添加日期"
+
+msgid "Date Modified"
+msgstr "修改日期"
+
+# Audio Player
+msgid "Play"
+msgstr "播放"
+
+msgid "Pause"
+msgstr "暂停"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Previous"
+msgstr "上一个"
+
+msgid "Next"
+msgstr "下一个"
+
+msgid "Volume"
+msgstr "音量"
+
+msgid "Mute"
+msgstr "静音"
+
+msgid "Loop"
+msgstr "循环"
+
+msgid "Shuffle"
+msgstr "随机"
+
+# Search
+msgid "Search..."
+msgstr "搜索..."
+
+msgid "Advanced Search"
+msgstr "高级搜索"
+
+msgid "Save Search"
+msgstr "保存搜索"
+
+msgid "Clear"
+msgstr "清除"
+
+msgid "No results found"
+msgstr "未找到结果"
+
+msgid "Searching..."
+msgstr "搜索中..."
+
+# Projects
+msgid "New Project"
+msgstr "新建项目"
+
+msgid "Open Project"
+msgstr "打开项目"
+
+msgid "Project Name"
+msgstr "项目名称"
+
+msgid "Description"
+msgstr "描述"
+
+msgid "Template"
+msgstr "模板"
+
+msgid "Add Files"
+msgstr "添加文件"
+
+msgid "Remove Files"
+msgstr "移除文件"
+
+msgid "Export Project"
+msgstr "导出项目"
+
+# Batch Processing
+msgid "Batch Processing"
+msgstr "批量处理"
+
+msgid "Convert Format"
+msgstr "格式转换"
+
+msgid "Normalize Audio"
+msgstr "音频标准化"
+
+msgid "Edit Metadata"
+msgstr "编辑元数据"
+
+msgid "Rename Files"
+msgstr "重命名文件"
+
+msgid "Processing..."
+msgstr "处理中..."
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Complete"
+msgstr "完成"
+
+msgid "Failed"
+msgstr "失败"
+
+# AI Tools
+msgid "Translation"
+msgstr "翻译"
+
+msgid "Tag Generation"
+msgstr "标签生成"
+
+msgid "Audio Analysis"
+msgstr "音频分析"
+
+msgid "Similar Sounds"
+msgstr "相似音效"
+
+msgid "Translate"
+msgstr "翻译"
+
+msgid "Generate Tags"
+msgstr "生成标签"
+
+msgid "Analyze"
+msgstr "分析"
+
+msgid "Find Similar"
+msgstr "查找相似"
+
+# Settings
+msgid "General"
+msgstr "常规"
+
+msgid "Appearance"
+msgstr "外观"
+
+msgid "Audio"
+msgstr "音频"
+
+msgid "AI Services"
+msgstr "AI服务"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Theme"
+msgstr "主题"
+
+msgid "Light"
+msgstr "浅色"
+
+msgid "Dark"
+msgstr "深色"
+
+msgid "System"
+msgstr "跟随系统"
+
+# Dialogs
+msgid "OK"
+msgstr "确定"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Confirm"
+msgstr "确认"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "No"
+msgstr "否"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Information"
+msgstr "信息"
+
+msgid "Are you sure?"
+msgstr "确定要执行此操作吗？"
+
+# Status Messages
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Loading..."
+msgstr "加载中..."
+
+msgid "Saving..."
+msgstr "保存中..."
+
+msgid "Scanning..."
+msgstr "扫描中..."
+
+msgid "files"
+msgstr "个文件"
+
+msgid "selected"
+msgstr "已选择"
+
+# Errors
+msgid "File not found"
+msgstr "文件未找到"
+
+msgid "Permission denied"
+msgstr "权限不足"
+
+msgid "Invalid format"
+msgstr "格式无效"
+
+msgid "Operation failed"
+msgstr "操作失败"
+
+msgid "Connection error"
+msgstr "连接错误"
+
+# Freesound
+msgid "Freesound"
+msgstr "Freesound"
+
+msgid "Search Freesound"
+msgstr "搜索Freesound"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Preview"
+msgstr "预览"
+
+msgid "License"
+msgstr "许可证"
+
+msgid "Attribution"
+msgstr "署名"
+
+# Naming
+msgid "Rename"
+msgstr "重命名"
+
+msgid "Batch Rename"
+msgstr "批量重命名"
+
+msgid "Preview Changes"
+msgstr "预览更改"
+
+msgid "Conflict"
+msgstr "冲突"
+
+msgid "Resolve"
+msgstr "解决"
+
+# Metadata
+msgid "Title"
+msgstr "标题"
+
+msgid "Artist"
+msgstr "艺术家"
+
+msgid "Album"
+msgstr "专辑"
+
+msgid "Genre"
+msgstr "流派"
+
+msgid "Year"
+msgstr "年份"
+
+msgid "Comment"
+msgstr "备注"
+
+msgid "Tags"
+msgstr "标签"
+
+# Units
+msgid "seconds"
+msgstr "秒"
+
+msgid "minutes"
+msgstr "分钟"
+
+msgid "hours"
+msgstr "小时"
+
+msgid "bytes"
+msgstr "字节"
+
+msgid "KB"
+msgstr "KB"
+
+msgid "MB"
+msgstr "MB"
+
+msgid "GB"
+msgstr "GB"
+
+msgid "Hz"
+msgstr "Hz"
+
+msgid "kHz"
+msgstr "kHz"
+
+msgid "bit"
+msgstr "位"
+
+msgid "kbps"
+msgstr "kbps"

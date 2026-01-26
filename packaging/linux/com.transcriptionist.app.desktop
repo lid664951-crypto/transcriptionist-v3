@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Transcriptionist
+GenericName=Sound Effects Manager
+Comment=Professional Sound Effects Management
+Icon=com.transcriptionist.app
+Exec=transcriptionist %F
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+Keywords=audio;sound;effects;sfx;library;management;
+StartupNotify=true
+StartupWMClass=transcriptionist
+MimeType=audio/wav;audio/x-wav;audio/flac;audio/x-flac;audio/mpeg;audio/ogg;audio/aiff;audio/x-aiff;audio/mp4;

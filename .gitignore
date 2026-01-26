@@ -1,0 +1,141 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Logs
+*.log
+logs/
+data/logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/database/*.db
+!data/database/.gitkeep
+
+# Cache
+*.cache
+data/cache/
+!data/cache/.gitkeep
+
+# AI Models (too large for git, users download in app)
+data/models/**/*.onnx
+data/models/**/*.pt
+data/models/**/*.pth
+data/models/**/*.bin
+data/models/**/*.safetensors
+models/musicgen/*.onnx
+!data/models/.gitkeep
+!models/musicgen/.gitkeep
+
+# Index files
+data/index/
+!data/index/.gitkeep
+
+# Backups
+data/backups/
+*.bak
+*.backup
+
+# User data
+data/projects/
+!data/projects/.gitkeep
+config/config.json
+data/glossary.json
+data/naming_settings.json
+data/cleaning_rules.json
+
+# Build artifacts
+build/
+dist/
+*.zip
+*.tar.gz
+
+# Runtime
+runtime/python/
+runtime/wheels/
+runtime/*.zip
+runtime/nicotine-gtk4/
+!runtime/.embedded
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.directory
+
+# Project specific
+*.xlsx
+*.csv
+!影视音效英语翻译术语库.csv
+测试*.py
+debug_*.py
+test_*.py
+!tests/
+verify_*.py
+diagnose_*.py
+inspect_*.py
+fix_*.py
+migrate_*.py
+clear_*.py
+import_*.py
+check_*.py
+convert_*.py

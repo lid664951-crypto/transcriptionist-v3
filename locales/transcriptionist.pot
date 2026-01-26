@@ -1,0 +1,431 @@
+# Transcriptionist v3 Translation Template
+# Copyright (C) 2026
+# This file is distributed under the same license as the Transcriptionist package.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Transcriptionist 3.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-01-16 12:00+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+# Application
+msgid "Transcriptionist"
+msgstr ""
+
+msgid "Professional Sound Effects Management"
+msgstr ""
+
+# Main Window
+msgid "Library"
+msgstr ""
+
+msgid "Projects"
+msgstr ""
+
+msgid "Search"
+msgstr ""
+
+msgid "AI Tools"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Help"
+msgstr ""
+
+# File Operations
+msgid "Open"
+msgstr ""
+
+msgid "Save"
+msgstr ""
+
+msgid "Save As"
+msgstr ""
+
+msgid "Import"
+msgstr ""
+
+msgid "Export"
+msgstr ""
+
+msgid "Close"
+msgstr ""
+
+msgid "Exit"
+msgstr ""
+
+# Edit Operations
+msgid "Undo"
+msgstr ""
+
+msgid "Redo"
+msgstr ""
+
+msgid "Cut"
+msgstr ""
+
+msgid "Copy"
+msgstr ""
+
+msgid "Paste"
+msgstr ""
+
+msgid "Delete"
+msgstr ""
+
+msgid "Select All"
+msgstr ""
+
+# Library View
+msgid "Add Folder"
+msgstr ""
+
+msgid "Remove Folder"
+msgstr ""
+
+msgid "Scan Library"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Filter"
+msgstr ""
+
+msgid "Sort By"
+msgstr ""
+
+msgid "Name"
+msgstr ""
+
+msgid "Duration"
+msgstr ""
+
+msgid "Format"
+msgstr ""
+
+msgid "Sample Rate"
+msgstr ""
+
+msgid "Date Added"
+msgstr ""
+
+msgid "Date Modified"
+msgstr ""
+
+# Audio Player
+msgid "Play"
+msgstr ""
+
+msgid "Pause"
+msgstr ""
+
+msgid "Stop"
+msgstr ""
+
+msgid "Previous"
+msgstr ""
+
+msgid "Next"
+msgstr ""
+
+msgid "Volume"
+msgstr ""
+
+msgid "Mute"
+msgstr ""
+
+msgid "Loop"
+msgstr ""
+
+msgid "Shuffle"
+msgstr ""
+
+# Search
+msgid "Search..."
+msgstr ""
+
+msgid "Advanced Search"
+msgstr ""
+
+msgid "Save Search"
+msgstr ""
+
+msgid "Clear"
+msgstr ""
+
+msgid "No results found"
+msgstr ""
+
+msgid "Searching..."
+msgstr ""
+
+# Projects
+msgid "New Project"
+msgstr ""
+
+msgid "Open Project"
+msgstr ""
+
+msgid "Project Name"
+msgstr ""
+
+msgid "Description"
+msgstr ""
+
+msgid "Template"
+msgstr ""
+
+msgid "Add Files"
+msgstr ""
+
+msgid "Remove Files"
+msgstr ""
+
+msgid "Export Project"
+msgstr ""
+
+# Batch Processing
+msgid "Batch Processing"
+msgstr ""
+
+msgid "Convert Format"
+msgstr ""
+
+msgid "Normalize Audio"
+msgstr ""
+
+msgid "Edit Metadata"
+msgstr ""
+
+msgid "Rename Files"
+msgstr ""
+
+msgid "Processing..."
+msgstr ""
+
+msgid "Cancel"
+msgstr ""
+
+msgid "Complete"
+msgstr ""
+
+msgid "Failed"
+msgstr ""
+
+# AI Tools
+msgid "Translation"
+msgstr ""
+
+msgid "Tag Generation"
+msgstr ""
+
+msgid "Audio Analysis"
+msgstr ""
+
+msgid "Similar Sounds"
+msgstr ""
+
+msgid "Translate"
+msgstr ""
+
+msgid "Generate Tags"
+msgstr ""
+
+msgid "Analyze"
+msgstr ""
+
+msgid "Find Similar"
+msgstr ""
+
+# Settings
+msgid "General"
+msgstr ""
+
+msgid "Appearance"
+msgstr ""
+
+msgid "Audio"
+msgstr ""
+
+msgid "AI Services"
+msgstr ""
+
+msgid "Language"
+msgstr ""
+
+msgid "Theme"
+msgstr ""
+
+msgid "Light"
+msgstr ""
+
+msgid "Dark"
+msgstr ""
+
+msgid "System"
+msgstr ""
+
+# Dialogs
+msgid "OK"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "Confirm"
+msgstr ""
+
+msgid "Yes"
+msgstr ""
+
+msgid "No"
+msgstr ""
+
+msgid "Error"
+msgstr ""
+
+msgid "Warning"
+msgstr ""
+
+msgid "Information"
+msgstr ""
+
+msgid "Are you sure?"
+msgstr ""
+
+# Status Messages
+msgid "Ready"
+msgstr ""
+
+msgid "Loading..."
+msgstr ""
+
+msgid "Saving..."
+msgstr ""
+
+msgid "Scanning..."
+msgstr ""
+
+msgid "files"
+msgstr ""
+
+msgid "selected"
+msgstr ""
+
+# Errors
+msgid "File not found"
+msgstr ""
+
+msgid "Permission denied"
+msgstr ""
+
+msgid "Invalid format"
+msgstr ""
+
+msgid "Operation failed"
+msgstr ""
+
+msgid "Connection error"
+msgstr ""
+
+# Freesound
+msgid "Freesound"
+msgstr ""
+
+msgid "Search Freesound"
+msgstr ""
+
+msgid "Download"
+msgstr ""
+
+msgid "Preview"
+msgstr ""
+
+msgid "License"
+msgstr ""
+
+msgid "Attribution"
+msgstr ""
+
+# Naming
+msgid "Rename"
+msgstr ""
+
+msgid "Batch Rename"
+msgstr ""
+
+msgid "Preview Changes"
+msgstr ""
+
+msgid "Conflict"
+msgstr ""
+
+msgid "Resolve"
+msgstr ""
+
+# Metadata
+msgid "Title"
+msgstr ""
+
+msgid "Artist"
+msgstr ""
+
+msgid "Album"
+msgstr ""
+
+msgid "Genre"
+msgstr ""
+
+msgid "Year"
+msgstr ""
+
+msgid "Comment"
+msgstr ""
+
+msgid "Tags"
+msgstr ""
+
+# Units
+msgid "seconds"
+msgstr ""
+
+msgid "minutes"
+msgstr ""
+
+msgid "hours"
+msgstr ""
+
+msgid "bytes"
+msgstr ""
+
+msgid "KB"
+msgstr ""
+
+msgid "MB"
+msgstr ""
+
+msgid "GB"
+msgstr ""
+
+msgid "Hz"
+msgstr ""
+
+msgid "kHz"
+msgstr ""
+
+msgid "bit"
+msgstr ""
+
+msgid "kbps"
+msgstr ""

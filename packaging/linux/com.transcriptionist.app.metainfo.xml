@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.transcriptionist.app</id>
+  
+  <name>Transcriptionist</name>
+  <summary>Professional Sound Effects Management</summary>
+  
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  
+  <description>
+    <p>
+      Transcriptionist is a professional sound effects management application
+      designed for audio professionals, game developers, and content creators.
+      Built with GTK4 and Libadwaita for a modern, native Linux experience.
+    </p>
+    <p>Key features:</p>
+    <ul>
+      <li>Comprehensive audio library management with folder monitoring</li>
+      <li>Advanced search with boolean operators and field-specific queries</li>
+      <li>AI-powered translation and automatic tag generation</li>
+      <li>Batch processing: format conversion, loudness normalization, metadata editing</li>
+      <li>Project organization with templates and export functionality</li>
+      <li>Freesound integration for discovering and downloading sounds</li>
+      <li>UCS naming convention support for professional workflows</li>
+      <li>Waveform visualization and audio preview</li>
+    </ul>
+  </description>
+  
+  <launchable type="desktop-id">com.transcriptionist.app.desktop</launchable>
+  
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main library view</caption>
+      <image>https://example.com/screenshots/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Search and filter</caption>
+      <image>https://example.com/screenshots/search.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>AI tools</caption>
+      <image>https://example.com/screenshots/ai-tools.png</image>
+    </screenshot>
+  </screenshots>
+  
+  <url type="homepage">https://github.com/transcriptionist/transcriptionist</url>
+  <url type="bugtracker">https://github.com/transcriptionist/transcriptionist/issues</url>
+  <url type="help">https://github.com/transcriptionist/transcriptionist/wiki</url>
+  
+  <developer_name>Transcriptionist Team</developer_name>
+  
+  <provides>
+    <binary>transcriptionist</binary>
+  </provides>
+  
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+  
+  <content_rating type="oars-1.1" />
+  
+  <releases>
+    <release version="3.0.0" date="2026-01-16">
+      <description>
+        <p>Initial release of Transcriptionist v3</p>
+        <ul>
+          <li>Complete rewrite with GTK4 and Libadwaita</li>
+          <li>New AI-powered features</li>
+          <li>Improved performance and stability</li>
+          <li>Multi-language support</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  
+  <keywords>
+    <keyword>audio</keyword>
+    <keyword>sound</keyword>
+    <keyword>effects</keyword>
+    <keyword>sfx</keyword>
+    <keyword>library</keyword>
+    <keyword>management</keyword>
+    <keyword>foley</keyword>
+    <keyword>game audio</keyword>
+    <keyword>post production</keyword>
+  </keywords>
+  
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Music</category>
+  </categories>
+</component>

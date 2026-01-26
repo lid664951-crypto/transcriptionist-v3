@@ -1,0 +1,133 @@
+音译家 Transcriptionist v3 - 版权信息
+=====================================
+
+本软件采用 GNU General Public License version 2 (GPL-2.0) 开源协议。
+完整协议文本请参见 LICENSE 文件。
+
+版权声明
+--------
+
+音译家 Transcriptionist v3
+Copyright (C) 2024-2026 音译家开发者
+
+本程序是自由软件；您可以根据自由软件基金会发布的 GNU 通用公共许可证
+第 2 版或（根据您的选择）任何更高版本的条款重新分发和/或修改它。
+
+本程序的发布是希望它有用，但不提供任何保证；甚至不提供适销性或特定
+用途适用性的默示保证。有关更多详细信息，请参阅 GNU 通用公共许可证。
+
+您应该已经随本程序收到 GNU 通用公共许可证的副本；如果没有，请写信给
+Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, 
+Boston, MA 02110-1301 USA
+
+
+第三方代码
+----------
+
+本软件包含来自以下开源项目的代码：
+
+1. Quod Libet (https://github.com/quodlibet/quodlibet)
+   License: GPL-2.0-or-later
+   Copyright: 2004-2025 Quod Libet contributors
+   
+   使用的组件：
+   - Pattern System (模式解析系统)
+     Copyright (C) 2004-2010 Joe Wreschnig, Michael Urman
+     Copyright (C) 2010, 2013 Christoph Reiter
+     Copyright (C) 2013-2025 Nick Boultbee
+   
+   - Rename Filters (重命名过滤器)
+     Copyright (C) 2004-2025 Quod Libet contributors
+   
+   - Query Parser (查询解析器)
+     Copyright (C) 2004-2005 Joe Wreschnig, Michael Urman
+     Copyright (C) 2016 Ryan Dellenbaugh
+     Copyright (C) 2017-2022 Nick Boultbee
+   
+   - Audio Formats (音频格式处理)
+     Copyright (C) 2004-2025 Quod Libet contributors
+   
+   - GStreamer Player (播放器)
+     Copyright (C) 2004-2025 Quod Libet contributors
+   
+   修改说明：
+   - 移除了 GTK 依赖
+   - 简化了接口
+   - 添加了类型注解
+   - 适配到 PySide6/Qt 框架
+
+2. Mutagen (https://github.com/quodlibet/mutagen)
+   License: MIT (兼容 GPL)
+   Copyright: 2005-2025 Joe Wreschnig and contributors
+   用途：音频元数据提取
+
+3. GStreamer (https://gstreamer.freedesktop.org/)
+   License: LGPL-2.1+ (兼容 GPL)
+   Copyright: GStreamer developers
+   用途：音频播放
+
+4. PySide6 (Qt for Python)
+   License: LGPL-3.0 / Commercial
+   Copyright: The Qt Company
+   用途：GUI 框架
+
+5. qfluentwidgets (https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
+   License: GPL-3.0
+   Copyright: zhiyiYo
+   用途：Fluent Design 风格组件
+
+
+依赖库
+------
+
+运行时依赖：
+- Python 3.12+
+- PySide6 >= 6.6.0
+- qfluentwidgets >= 1.5.0
+- mutagen >= 1.47.0
+- GStreamer >= 1.0
+- numpy >= 1.24.0
+- torch >= 2.0.0 (可选，用于 AI 功能)
+- onnxruntime-directml (可选，用于 GPU 加速)
+
+所有依赖库的完整列表和许可证信息请参见 requirements.txt 和各库的官方文档。
+
+
+致谢
+----
+
+特别感谢以下项目和开发者：
+
+- Quod Libet 项目及其所有贡献者，特别是：
+  * Joe Wreschnig - 项目创始人
+  * Michael Urman - 早期核心开发者
+  * Christoph Reiter - 核心维护者
+  * Nick Boultbee - 当前主要维护者
+  * Ryan Dellenbaugh - 查询系统贡献者
+  
+- Mutagen 项目的所有贡献者
+- GStreamer 项目的所有贡献者
+- Qt/PySide6 团队
+- qfluentwidgets 作者 zhiyiYo
+
+感谢所有为开源软件做出贡献的开发者们！
+
+
+联系方式
+--------
+
+项目主页：[待添加]
+问题反馈：[待添加]
+微信：[见软件内"联系我"功能]
+
+
+更新日志
+--------
+
+v1.0.0 (2026-01)
+- 初始版本发布
+- 集成 AI 智能翻译
+- 集成 AI 语义检索
+- 支持 UCS 命名规范
+- 在线资源下载（Freesound）
+- AI 音乐生成（实验性功能）

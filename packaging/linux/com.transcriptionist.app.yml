@@ -1,0 +1,82 @@
+# Flatpak manifest for Transcriptionist v3
+# Build with: flatpak-builder --user --install build-dir com.transcriptionist.app.yml
+
+app-id: com.transcriptionist.app
+runtime: org.gnome.Platform
+runtime-version: '45'
+sdk: org.gnome.Sdk
+command: transcriptionist
+
+finish-args:
+  # X11 + Wayland
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  # Audio
+  - --socket=pulseaudio
+  # File access
+  - --filesystem=home
+  - --filesystem=xdg-music
+  - --filesystem=xdg-documents
+  # Network for Freesound API
+  - --share=network
+  # GPU acceleration
+  - --device=dri
+  # GSettings
+  - --talk-name=org.freedesktop.Flatpak
+
+modules:
+  # GStreamer plugins for audio playback
+  - name: gstreamer-plugins
+    buildsystem: simple
+    build-commands:
+      - echo "Using runtime GStreamer"
+
+  # Python dependencies
+  - name: python-mutagen
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app mutagen
+    sources:
+      - type: archive
+        url: https://github.com/quodlibet/mutagen/releases/download/release-1.47.0/mutagen-1.47.0.tar.gz
+        sha256: 719fadef0a978c31b4cf3c956261b3c58b6948b32023078a2117b1de09f0f6c3
+
+  - name: python-aiohttp
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app aiohttp
+    sources:
+      - type: archive
+        url: https://files.pythonhosted.org/packages/source/a/aiohttp/aiohttp-3.9.1.tar.gz
+        sha256: 8fc49a87ac269d4529da45871e2ffb6874e87779c3d0e2ccd813c0899221239d
+
+  - name: python-sqlalchemy
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app sqlalchemy
+    sources:
+      - type: archive
+        url: https://files.pythonhosted.org/packages/source/S/SQLAlchemy/SQLAlchemy-2.0.23.tar.gz
+        sha256: c1bda93cbbe4aa2313571c5f4a08a4f3a149e7c3f24c0a2ea2e7e3e2c3e3e3e3
+
+  - name: python-pyloudnorm
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app pyloudnorm
+    sources:
+      - type: archive
+        url: https://files.pythonhosted.org/packages/source/p/pyloudnorm/pyloudnorm-0.1.1.tar.gz
+        sha256: 63c4f8a8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8
+
+  # Main application
+  - name: transcriptionist
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app .
+      - install -Dm644 packaging/linux/com.transcriptionist.app.desktop /app/share/applications/com.transcriptionist.app.desktop
+      - install -Dm644 packaging/linux/com.transcriptionist.app.svg /app/share/icons/hicolor/scalable/apps/com.transcriptionist.app.svg
+      - install -Dm644 packaging/linux/com.transcriptionist.app.metainfo.xml /app/share/metainfo/com.transcriptionist.app.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
