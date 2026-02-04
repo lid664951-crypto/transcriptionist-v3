@@ -221,6 +221,14 @@ BUILTIN_TEMPLATES = [
         category="builtin",
         is_builtin=True,
     ),
+    NamingTemplate(
+        id="bilingual_underscore",
+        name="中英双语（下划线）",
+        pattern="{translated}_{filename}",
+        description="爆炸_Explosion",
+        category="builtin",
+        is_builtin=True,
+    ),
 ]
 
 

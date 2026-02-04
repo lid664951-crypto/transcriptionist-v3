@@ -1,104 +1,163 @@
 @echo off
+setlocal
+
+REM NOTE:
+REM Keep this script ASCII-only to avoid cmd.exe encoding issues.
+REM Output filenames (Chinese) are controlled by build.spec / installer.iss.
+
 chcp 65001 >nul
+REM Force Python to output UTF-8 to avoid GBK/Unicode issues
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
+
+REM Enable installer build by default (set BUILD_INSTALLER=0 to disable)
+if not defined BUILD_INSTALLER set "BUILD_INSTALLER=1"
+
 echo ============================================================
-echo 音译家 v1.0.0 - 自动打包脚本
+echo Build script (PyInstaller + Inno Setup Installer)
 echo ============================================================
 echo.
 
-:: 设置内嵌 Python 路径
-set PYTHON_EXE=runtime\python\python.exe
+REM Generate log file name
+set "LOG_FILE=build_log.txt"
+echo Build log will be saved to: %LOG_FILE%
+echo ============================================================ > "%LOG_FILE%"
+echo Build script (PyInstaller + Inno Setup Installer) >> "%LOG_FILE%"
+echo Started at: %date% %time% >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+echo. >> "%LOG_FILE%"
 
-:: 检查内嵌 Python
+set "PYTHON_EXE=runtime\python\python.exe"
+
 if not exist "%PYTHON_EXE%" (
-    echo ❌ 错误: 未找到内嵌 Python
-    echo    路径: %PYTHON_EXE%
-    echo    请确保项目完整
-    pause
-    exit /b 1
+  echo ERROR: embedded python not found: %PYTHON_EXE%
+  echo ERROR: embedded python not found: %PYTHON_EXE% >> "%LOG_FILE%"
+  echo Please ensure the project is complete.
+  echo Please ensure the project is complete. >> "%LOG_FILE%"
+  pause
+  exit /b 1
 )
 
-echo ✅ 找到内嵌 Python
-%PYTHON_EXE% --version
+echo Embedded python:
+echo Embedded python: >> "%LOG_FILE%"
+"%PYTHON_EXE%" --version
+"%PYTHON_EXE%" --version >> "%LOG_FILE%" 2>&1
+echo. >> "%LOG_FILE%"
 echo.
 
-:: 步骤 1: 安装打包工具
-echo [1/5] 安装打包工具...
-%PYTHON_EXE% -m pip install pyinstaller pillow --quiet
+echo [1/6] Install build tools...
+echo [1/6] Install build tools... >> "%LOG_FILE%"
+"%PYTHON_EXE%" -m pip install pyinstaller pillow --quiet
+"%PYTHON_EXE%" -m pip install pyinstaller pillow --quiet >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-    echo ❌ 安装失败
-    pause
-    exit /b 1
+  echo ERROR: pip install failed.
+  echo ERROR: pip install failed. >> "%LOG_FILE%"
+  pause
+  exit /b 1
 )
-echo ✅ 打包工具已安装
+REM Ensure packaging is complete
+echo Upgrading packaging...
+echo Upgrading packaging... >> "%LOG_FILE%"
+"%PYTHON_EXE%" -m pip install --upgrade packaging --quiet
+"%PYTHON_EXE%" -m pip install --upgrade packaging --quiet >> "%LOG_FILE%" 2>&1
+echo. >> "%LOG_FILE%"
 echo.
 
-:: 步骤 2: 转换图标
-echo [2/5] 转换图标...
-%PYTHON_EXE% convert_icon.py
+echo [2/6] Convert icon...
+echo [2/6] Convert icon... >> "%LOG_FILE%"
+"%PYTHON_EXE%" convert_icon.py
+"%PYTHON_EXE%" convert_icon.py >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-    echo ⚠️  警告: 图标转换失败，将使用默认图标
+  echo ERROR: convert_icon.py failed.
+  echo ERROR: convert_icon.py failed. >> "%LOG_FILE%"
+  echo Check above traceback in %LOG_FILE%
+  pause
+  exit /b 1
 )
+echo. >> "%LOG_FILE%"
 echo.
 
-:: 步骤 3: 清理旧文件
-echo [3/5] 清理旧文件...
-if exist build rmdir /s /q build
-if exist dist rmdir /s /q dist
-echo ✅ 清理完成
+echo [3/6] Clean output...
+echo [3/6] Clean output... >> "%LOG_FILE%"
+REM Force delete build and dist directories
+if exist build (
+  rmdir /s /q build 2>nul
+  if exist build powershell -Command "Remove-Item -Path 'build' -Recurse -Force -ErrorAction SilentlyContinue"
+)
+if exist dist (
+  rmdir /s /q dist 2>nul
+  if exist dist powershell -Command "Remove-Item -Path 'dist' -Recurse -Force -ErrorAction SilentlyContinue"
+)
+echo Cleaned build and dist directories. >> "%LOG_FILE%"
+echo. >> "%LOG_FILE%"
 echo.
 
-:: 步骤 4: 执行打包
-echo [4/5] 开始打包...
-echo    这可能需要几分钟，请耐心等待...
+echo [4/6] PyInstaller build...
+echo [4/6] PyInstaller build... >> "%LOG_FILE%"
+echo PyInstaller output will be saved to log file...
+echo PyInstaller output will be saved to log file... >> "%LOG_FILE%"
 echo.
-%PYTHON_EXE% -m PyInstaller build.spec
+echo TIP: PyInstaller may take 10-30 minutes. Do not close this window.
+echo      Check build_log.txt for progress if the console seems idle.
+echo.
+echo TIP: PyInstaller may take 10-30 minutes... >> "%LOG_FILE%"
+echo. >> "%LOG_FILE%"
+echo.
+"%PYTHON_EXE%" -m PyInstaller build.spec -y >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-    echo ❌ 打包失败
-    pause
-    exit /b 1
+  echo ERROR: PyInstaller build failed. >> "%LOG_FILE%"
+  echo ERROR: PyInstaller build failed.
+  echo.
+  echo Detailed error saved to: %LOG_FILE%
+  pause
+  exit /b 1
 )
-echo ✅ 打包完成
+echo. >> "%LOG_FILE%"
 echo.
 
-:: 步骤 5: 显示结果
-echo [5/5] 打包结果:
-echo.
-if exist "dist\音译家 AI 音效管理工具\音译家.exe" (
-    echo ✅ 成功！可执行文件已生成
-    echo.
-    echo 📁 输出目录: dist\音译家 AI 音效管理工具\
-    echo 📦 主程序: dist\音译家 AI 音效管理工具\音译家.exe
-    echo.
-    
-    :: 显示文件大小
-    for %%F in ("dist\音译家 AI 音效管理工具\音译家.exe") do (
-        set size=%%~zF
-        set /a sizeMB=!size! / 1048576
-        echo 📊 程序大小: !sizeMB! MB
+echo [5/6] Build installer (Inno Setup)...
+echo [5/6] Build installer (Inno Setup)... >> "%LOG_FILE%"
+
+REM Find Inno Setup Compiler (ISCC.exe)
+set "ISCC="
+if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
+if exist "C:\Program Files (x86)\Inno Setup 5\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 5\ISCC.exe"
+
+if "%BUILD_INSTALLER%"=="1" (
+  if not "%ISCC%"=="" (
+    echo Building installer with: %ISCC%
+    echo Building installer with: %ISCC% >> "%LOG_FILE%"
+    "%ISCC%" "installer.iss" >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+      echo WARNING: installer build failed. Check installer.iss output above.
+      echo WARNING: installer build failed. >> "%LOG_FILE%"
+    ) else (
+      echo Installer build OK.
+      echo Installer build OK. >> "%LOG_FILE%"
     )
-    
-    echo.
-    echo ============================================================
-    echo 打包完成！
-    echo ============================================================
-    echo.
-    echo 下一步:
-    echo 1. 测试程序: cd "dist\音译家 AI 音效管理工具" ^&^& 音译家.exe
-    echo 2. 创建安装包: 使用 Inno Setup 编译 installer.iss
-    echo 3. 分发给用户
-    echo.
-    
-    :: 询问是否立即测试
-    set /p test="是否立即运行测试？(Y/N): "
-    if /i "%test%"=="Y" (
-        echo.
-        echo 启动程序...
-        start "" "dist\音译家 AI 音效管理工具\音译家.exe"
-    )
+  ) else (
+    echo WARNING: Inno Setup not detected. Skipping installer build.
+    echo WARNING: Inno Setup not detected. >> "%LOG_FILE%"
+    echo Install Inno Setup and rerun this script if you need a setup.exe.
+  )
 ) else (
-    echo ❌ 错误: 未找到可执行文件
-    echo    请检查打包日志
+  echo Skipped - installer build disabled.
+  echo Skipped - installer build disabled. >> "%LOG_FILE%"
+  echo To enable: set BUILD_INSTALLER=1
 )
+echo. >> "%LOG_FILE%"
+echo.
 
+echo [6/6] Done. Check the dist\ folder for the portable version.
+echo [6/6] Done. Check the dist\ folder for the portable version. >> "%LOG_FILE%"
+echo. >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+echo Build completed at: %date% %time% >> "%LOG_FILE%"
+echo ============================================================ >> "%LOG_FILE%"
+echo.
+echo ============================================================
+echo Build log saved to: %LOG_FILE%
+echo ============================================================
 echo.
 pause

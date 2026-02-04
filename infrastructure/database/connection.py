@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.engine import Engine
 
@@ -97,6 +97,7 @@ class DatabaseManager:
             return
         
         Base.metadata.create_all(self.engine)
+        self._apply_migrations()
         self._initialized = True
         logger.info("Database tables created")
     
@@ -128,11 +129,15 @@ class DatabaseManager:
         try:
             yield session
             session.commit()
+            return
         except Exception:
             session.rollback()
             raise
         finally:
-            session.close()
+            try:
+                session.close()
+            except Exception as e:
+                logger.error(f"Failed to close session: {e}")
     
     def close(self) -> None:
         """Close the database connection."""
@@ -141,6 +146,42 @@ class DatabaseManager:
             self._engine = None
             self._session_factory = None
             logger.info("Database connection closed")
+
+    def _apply_migrations(self) -> None:
+        """轻量级结构迁移（仅新增列/索引，不做破坏性操作）。"""
+        try:
+            with self.engine.begin() as conn:
+                result = conn.execute(text("PRAGMA table_info(audio_files)"))
+                columns = [row[1] for row in result.fetchall()]
+
+                new_columns = [
+                    ("original_filename", "original_filename VARCHAR(512) NOT NULL DEFAULT ''"),
+                    ("translated_name", "translated_name VARCHAR(512)"),
+                    ("index_status", "index_status INTEGER DEFAULT 0"),
+                    ("index_version", "index_version VARCHAR(64) NOT NULL DEFAULT ''"),
+                    ("tag_status", "tag_status INTEGER DEFAULT 0"),
+                    ("tag_version", "tag_version VARCHAR(64) NOT NULL DEFAULT ''"),
+                    ("translation_status", "translation_status INTEGER DEFAULT 0"),
+                ]
+                for name, ddl in new_columns:
+                    if name in columns:
+                        continue
+                    conn.execute(text(f"ALTER TABLE audio_files ADD COLUMN {ddl}"))
+
+                # 原始文件名缺失时补全
+                if "original_filename" in columns or any(name == "original_filename" for name, _ in new_columns):
+                    conn.execute(text("UPDATE audio_files SET original_filename = filename WHERE original_filename = '' OR original_filename IS NULL"))
+
+                # 新增状态索引
+                index_sql = [
+                    "CREATE INDEX IF NOT EXISTS idx_audio_files_index_status ON audio_files (index_status)",
+                    "CREATE INDEX IF NOT EXISTS idx_audio_files_tag_status ON audio_files (tag_status)",
+                    "CREATE INDEX IF NOT EXISTS idx_audio_files_translation_status ON audio_files (translation_status)",
+                ]
+                for sql in index_sql:
+                    conn.execute(text(sql))
+        except Exception as e:
+            logger.error(f"Database migration failed: {e}")
 
 
 # Global database manager instance

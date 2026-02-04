@@ -26,6 +26,18 @@ class RenamingService:
         if not path.exists():
             return False, "文件不存在", file_path
 
+        # 额外检查目标目录写入权限，尽早给出友好提示（尤其是只读盘/受保护目录）
+        try:
+            parent_dir = path.parent
+            # os.access 在 Windows 上不是绝对可靠，但可以过滤掉明显的只读情况
+            if not os.access(parent_dir, os.W_OK):
+                msg = f"目标文件夹没有写入权限：{parent_dir}"
+                logger.warning(f"Rename aborted due to write permission: {file_path} -> {new_name} ({msg})")
+                return False, msg, file_path
+        except Exception as e:
+            # 权限检测失败不阻断流程，后续 rename 仍会有更明确的异常
+            logger.debug(f"Failed to pre-check write permission for {path}: {e}")
+
         # 1. Write Metadata (Sync)
         try:
             RenamingService._write_original_filename_sync(path, path.name)
@@ -85,13 +97,18 @@ class RenamingService:
                 f.save()
             elif ext in ['.mp3', '.wav']:
                 if f.tags is None:
-                    try: f.add_tags()
-                    except: pass
+                    try:
+                        f.add_tags()
+                    except Exception as e:
+                        # 标签结构初始化失败，后续写入会被跳过
+                        logger.warning(f"Failed to add tags for {path.name}: {e}")
                 if ext == '.wav' and not isinstance(f.tags, ID3):
                    try:
                        f = WAVE(str(path))
-                       if f.tags is None: f.add_tags()
-                   except: pass
+                       if f.tags is None:
+                           f.add_tags()
+                   except Exception as e:
+                       logger.warning(f"Failed to convert WAV tags for {path.name}: {e}")
                 if isinstance(f.tags, ID3):
                     f.tags.add(TXXX(encoding=3, desc='ORIGINAL_FILENAME', text=[original_name]))
                     f.save()
@@ -101,7 +118,7 @@ class RenamingService:
         except ImportError:
             logger.error("Mutagen not installed")
         except PermissionError as e:
-            # 权限错误 - 提供详细信息
+            # 权限错误 - 提供详细信息并抛出给上层处理
             logger.error(f"Permission denied when writing metadata to {path.name}: {e}")
             raise PermissionError(
                 f"无法写入文件标签信息。可能原因：\n"

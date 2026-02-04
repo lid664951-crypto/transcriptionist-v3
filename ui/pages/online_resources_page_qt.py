@@ -46,6 +46,128 @@ class SearchWorker(QThread):
         self.page = page
         self.page_size = page_size
     
+    def _build_translate_func(self):
+        """
+        构建统一翻译函数（优先 HY-MT1.5 ONNX，其次通用大模型）。
+        
+        注意：这是一个同步函数，方便在 QThread 中直接调用，
+        内部会自行管理事件循环和服务生命周期。
+        """
+        import re as _re
+        import asyncio as _asyncio
+        from transcriptionist_v3.core.config import AppConfig as _AppConfig
+        from transcriptionist_v3.application.ai_engine.base import AIServiceConfig as _AIServiceConfig
+        from transcriptionist_v3.application.ai_engine.providers.openai_compatible import OpenAICompatibleService as _OpenAIService
+        
+        def translate(text: str) -> str:
+            # 空字符串直接返回
+            if not text:
+                return text
+            
+            # 根据是否包含中文，自动判断目标语言：
+            # - 如果文本中含中文：翻译成英文（用于查询）
+            # - 如果文本中不含中文：翻译成中文（用于结果名称）
+            has_zh = bool(_re.search(r'[\u4e00-\u9fff]', text))
+            target_lang = "en" if has_zh else "zh"
+            
+            # 1. 优先尝试 HY-MT1.5 ONNX 本地翻译模型 - 已注释（模型加载慢且翻译质量不稳定）
+            # try:
+            #     translation_model_type = _AppConfig.get("ai.translation_model_type", "general")
+            #     if translation_model_type == "hy_mt15_onnx":
+            #         from transcriptionist_v3.runtime.runtime_config import get_data_dir as _get_data_dir
+            #         from transcriptionist_v3.application.ai_engine.providers.hy_mt15_onnx import HyMT15OnnxService as _HyMTService
+            #         
+            #         model_dir = _get_data_dir() / "models" / "hy-mt1.5-onnx"
+            #         required = ["model_fp16.onnx", "model_fp16.onnx_data", "model_fp16.onnx_data_1"]
+            #         has_model = all((model_dir / f).exists() for f in required) and (
+            #             (model_dir / "tokenizer.json").exists() or (model_dir / "tokenizer_config.json").exists()
+            #         )
+            #         if has_model:
+            #             cfg = _AIServiceConfig(provider_id="hy_mt15_onnx", model_name="hy-mt1.5-onnx")
+            #             svc = _HyMTService(cfg)
+            #             loop = _asyncio.new_event_loop()
+            #             _asyncio.set_event_loop(loop)
+            #             try:
+            #                 loop.run_until_complete(svc.initialize())
+            #                 src_lang = "zh" if target_lang == "en" else "en"
+            #                 r = loop.run_until_complete(
+            #                     svc.translate(text, source_lang=src_lang, target_lang=target_lang)
+            #                 )
+            #                 if r and r.success and r.data:
+            #                     return r.data.translated.strip()
+            #             finally:
+            #                 try:
+            #                     loop.run_until_complete(svc.cleanup())
+            #                 except Exception:
+            #                     pass
+            #                 loop.close()
+            # except Exception as e:
+            #     logger.debug(f"HY-MT1.5 ONNX translate failed in Freesound search, fallback to general: {e}")
+            
+            # 2. 回退到通用大模型（DeepSeek / OpenAI / Doubao）
+            api_key = _AppConfig.get("ai.api_key", "").strip()
+            if not api_key:
+                # 没有配置通用模型时，直接返回原文，避免影响搜索
+                return text
+            
+            model_idx = _AppConfig.get("ai.model_index", 0)
+            model_configs = {
+                0: {"provider": "deepseek", "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1"},
+                1: {"provider": "openai", "model": "gpt-4o-mini", "base_url": "https://api.openai.com/v1"},
+                2: {"provider": "doubao", "model": "doubao-pro-4k", "base_url": "https://ark.cn-beijing.volces.com/api/v3"},
+            }
+            config = model_configs.get(model_idx, model_configs[0])
+            
+            # 根据目标语言构造简单提示词
+            if target_lang == "en":
+                sys_prompt = (
+                    "You are a translator. Translate the following Chinese audio-related search query "
+                    "to concise English keywords suitable for Freesound.org search. "
+                    "Output ONLY the English translation, one line per input line."
+                )
+            else:
+                sys_prompt = (
+                    "你是一位专业的影视音效标签翻译助手。\n"
+                    "任务：将以下英文音效名称翻译为简短、自然的简体中文标签，用于展示给用户。\n"
+                    "要求：\n"
+                    "- 保持意思准确，不要添加不存在的内容；\n"
+                    "- 结果尽量简洁，一般不超过 8 个汉字；\n"
+                    "- 一行一个结果，对应输入的每一行。\n"
+                )
+            
+            svc_cfg = _AIServiceConfig(
+                provider_id=config["provider"],
+                api_key=api_key,
+                base_url=config["base_url"],
+                model_name=config["model"],
+                system_prompt=sys_prompt,
+            )
+            
+            svc = _OpenAIService(svc_cfg)
+            loop = _asyncio.new_event_loop()
+            _asyncio.set_event_loop(loop)
+            try:
+                # 这里直接使用 translate 接口，内部会按一段文本整体处理
+                src_lang = "zh" if target_lang == "en" else "en"
+                r = loop.run_until_complete(
+                    svc.translate(text, source_lang=src_lang, target_lang=target_lang)
+                )
+                if r and r.success and r.data:
+                    return (r.data.translated or text).strip()
+            except Exception as e:
+                logger.error(f"General model translate failed in Freesound search: {e}")
+            finally:
+                try:
+                    loop.run_until_complete(svc.cleanup())
+                except Exception:
+                    pass
+                loop.close()
+            
+            # 最终兜底：返回原文
+            return text
+        
+        return translate
+    
     def run(self):
         try:
             loop = asyncio.new_event_loop()
@@ -58,13 +180,36 @@ class SearchWorker(QThread):
             self.finished.emit(e)
     
     async def _search(self):
+        """
+        使用 FreesoundSearchService 进行搜索，并接入统一翻译逻辑：
+        - 中文查询自动翻译为英文再搜索（HY-MT 优先）
+        - 英文结果名称自动翻译为中文展示（HY-MT 优先）
+        """
+        # 构建简单的 FreesoundSettings（后续如有更多设置可从 AppConfig 扩展）
+        settings = FreesoundSettings(
+            api_token=self.api_key,
+            download_path="",
+            auto_add_to_library=True,
+            auto_translate_and_rename=False,
+            keep_original_name=False,
+            show_license_confirm=True,
+            auto_translate_search=True,
+            auto_translate_results=True,
+            page_size=self.page_size,
+            max_concurrent_downloads=3,
+        )
+        
+        # 构建统一翻译函数（优先 HY-MT1.5）
+        translate_func = self._build_translate_func()
+        
         async with FreesoundClient(self.api_key) as client:
-            options = FreesoundSearchOptions(
-                query=self.query,
-                page=self.page,
-                page_size=self.page_size
+            service = FreesoundSearchService(
+                client=client,
+                settings=settings,
+                translate_func=translate_func,
             )
-            return await client.search(self.query, options)
+            # 使用高级搜索服务（带翻译与缓存）
+            return await service.search(self.query, page=self.page)
 
 
 class SoundCard(ElevatedCardWidget):

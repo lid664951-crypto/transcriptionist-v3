@@ -2,21 +2,23 @@
 import logging
 import subprocess
 from pathlib import Path
-from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem, 
-    QHeaderView, QAbstractItemView, QApplication
+    QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem,
+    QHeaderView, QAbstractItemView, QApplication,
+    QStackedWidget, QScrollArea, QSizePolicy, QFrame
 )
 from PySide6.QtGui import QFont, QAction
 
 from qfluentwidgets import (
     TreeWidget, FluentIcon, SubtitleLabel, CaptionLabel,
     RoundMenu, Action, IconWidget, TransparentToolButton,
-    CheckBox, PushButton, MessageBox
+    CheckBox, PushButton, MessageBox, CardWidget, ScrollArea
 )
+from transcriptionist_v3.ui.utils.flow_layout import FlowLayout
 
+from sqlalchemy import func
 from transcriptionist_v3.infrastructure.database.connection import session_scope
 from transcriptionist_v3.infrastructure.database.models import AudioFile, AudioFileTag
 from transcriptionist_v3.ui.utils.notifications import NotificationHelper
@@ -72,13 +74,15 @@ class TagsPage(QWidget):
     """
     
     play_file = Signal(str)
+    # 选中标签变化时发出，用于更新音效列表：(display_name, file_paths)
+    tags_selection_changed = Signal(str, list)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("tagsPage")
         
         # 懒加载相关
-        self._all_tag_groups = {}  # 所有标签分组 {tag_name: [files]}
+        self._all_tag_groups = {}  # 所有标签统计 {tag_name: count}
         self._loaded_tags = []     # 已加载的标签
         self._batch_size = 20      # 每批加载 20 个标签
         self._is_loading = False
@@ -86,6 +90,15 @@ class TagsPage(QWidget):
         # 全选相关
         self._is_all_selected = False  # 全选状态标记
         self._selected_items = set()   # 选中的项目
+        
+        # 平铺视图：tag_name -> checkbox，用于全选/取消时同步
+        self._tile_checkboxes = {}
+        
+        # 标签选中 → 音效列表：防抖计时器
+        self._tags_panel_update_timer = QTimer(self)
+        self._tags_panel_update_timer.setInterval(120)
+        self._tags_panel_update_timer.setSingleShot(True)
+        self._tags_panel_update_timer.timeout.connect(self._update_audio_files_panel_from_tags)
         
         self._init_ui()
         self.refresh()
@@ -115,32 +128,87 @@ class TagsPage(QWidget):
         toolbar.addWidget(self.selected_label)
         
         # 删除按钮
-        self.delete_btn = PushButton(FluentIcon.DELETE, "删除选中标签")
+        self.delete_btn = PushButton(FluentIcon.DELETE, "删除选中")
         self.delete_btn.clicked.connect(self._on_delete_selected)
         self.delete_btn.setEnabled(False)
         toolbar.addWidget(self.delete_btn)
         
+        # 视图切换：一个按钮，点击弹出菜单选择「列表」或「平铺」
+        toolbar.addStretch()
+        list_icon = getattr(FluentIcon, 'LIST', FluentIcon.DOCUMENT)
+        grid_icon = getattr(FluentIcon, 'GRID', FluentIcon.ALBUM)
+        self._view_list_icon = list_icon
+        self._view_grid_icon = grid_icon
+        self._view_mode_index = 0  # 0=列表 1=平铺
+        self.view_mode_btn = TransparentToolButton(list_icon)
+        self.view_mode_btn.setToolTip("视图：列表 / 平铺")
+        self.view_mode_btn.setFixedSize(32, 32)
+        self.view_mode_btn.clicked.connect(self._show_view_mode_menu)
+        toolbar.addWidget(self.view_mode_btn)
+        
         layout.addLayout(toolbar)
         
-        # Tree
+        # 列表 / 平铺 双视图
+        self.view_stack = QStackedWidget()
+        
+        # 列表视图：仅标签行，不展开音效（音效在右侧面板勾选标签后显示）
         self.tree = TreeWidget()
-        self.tree.setHeaderLabels(["标签 / 文件名", "时长", "格式", ""])
+        self.tree.setHeaderLabels(["标签"])
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.tree.header().resizeSection(3, 40)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
-        
-        # 连接双击事件
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        
-        # 连接选中变化事件
         self.tree.itemChanged.connect(self._on_item_changed)
+        self.view_stack.addWidget(self.tree)
         
-        layout.addWidget(self.tree)
+        # 平铺视图：标签卡片流式布局
+        self.tile_scroll = ScrollArea()
+        self.tile_scroll.setWidgetResizable(True)
+        self.tile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tile_widget = QWidget()
+        self.tile_layout = FlowLayout(self.tile_widget)
+        self.tile_scroll.setWidget(self.tile_widget)
+        self.view_stack.addWidget(self.tile_scroll)
+        
+        self.view_stack.setCurrentIndex(0)  # 默认列表
+        layout.addWidget(self.view_stack)
+    
+    def _show_view_mode_menu(self):
+        """点击视图按钮时弹出菜单，选择列表或平铺"""
+        menu = RoundMenu(parent=self)
+        list_action = Action(self._view_list_icon, "列表")
+        list_action.triggered.connect(self._on_view_list)
+        grid_action = Action(self._view_grid_icon, "平铺")
+        grid_action.triggered.connect(self._on_view_tile)
+        menu.addAction(list_action)
+        menu.addAction(grid_action)
+        pos = self.view_mode_btn.mapToGlobal(self.view_mode_btn.rect().bottomLeft())
+        menu.exec(pos)
+    
+    def _on_view_list(self):
+        """切换到列表呈现，并同步选中状态"""
+        self._view_mode_index = 0
+        self.view_mode_btn.setIcon(self._view_list_icon)
+        self.view_stack.setCurrentIndex(0)
+        self.tree.blockSignals(True)
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and data.get("type") == "tag":
+                tag_name = data.get("name")
+                item.setCheckState(0, Qt.CheckState.Checked if (tag_name in self._selected_items or self._is_all_selected) else Qt.CheckState.Unchecked)
+        self.tree.blockSignals(False)
+    
+    def _on_view_tile(self):
+        """切换到平铺呈现，并同步选中状态"""
+        self._view_mode_index = 1
+        self.view_mode_btn.setIcon(self._view_grid_icon)
+        self.view_stack.setCurrentIndex(1)
+        for tag_name, cb in self._tile_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(tag_name in self._selected_items or self._is_all_selected)
+            cb.blockSignals(False)
         
     def refresh(self):
         """Load tags and files from database"""
@@ -149,35 +217,38 @@ class TagsPage(QWidget):
         self._selected_items.clear()
         self._is_all_selected = False
         self.select_all_cb.setChecked(False)
+        # 清空平铺视图
+        self._tile_checkboxes.clear()
+        while self.tile_layout.count():
+            item = self.tile_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        # 刷新后若之前有选中，音效列表应清空
+        self.tags_selection_changed.emit("", [])
         
         try:
             with session_scope() as session:
-                # Query all tags joined with files
-                tags = session.query(AudioFileTag).join(AudioFile).all()
-                
-                # Group by tag
-                tag_groups = defaultdict(list)
-                for t in tags:
-                    tag_groups[t.tag].append(t.audio_file)
-                
-                # 保存所有标签分组
-                self._all_tag_groups = dict(tag_groups)
-                
+                # 只加载标签统计，避免一次性拉取全部文件对象
+                tag_counts = (
+                    session.query(AudioFileTag.tag, func.count(AudioFileTag.id))
+                    .group_by(AudioFileTag.tag)
+                    .all()
+                )
+                self._all_tag_groups = {tag: int(count) for tag, count in tag_counts}
                 logger.info(f"Loaded {len(self._all_tag_groups)} tags from database")
-                
-                # 更新统计
-                self.stats_label.setText(f"共 {len(self._all_tag_groups)} 个标签")
-                
-                # 懒加载：只加载初始批次
-                self._load_next_tag_batch()
-                
-                # 连接滚动信号
-                scrollbar = self.tree.verticalScrollBar()
+            
+            # 在会话外更新 UI，避免长时间持锁；并确保首批一定会加载
+            total = len(self._all_tag_groups)
+            self.stats_label.setText(f"共 {total} 个标签" if total == 0 else f"已加载 0/{total} 个标签")
+            self._is_loading = False
+            self._load_next_tag_batch()
+            
+            for sb in (self.tree.verticalScrollBar(), self.tile_scroll.verticalScrollBar()):
                 try:
-                    scrollbar.valueChanged.disconnect(self._on_scroll)
-                except:
+                    sb.valueChanged.disconnect(self._on_scroll)
+                except Exception:
                     pass
-                scrollbar.valueChanged.connect(self._on_scroll)
+                sb.valueChanged.connect(self._on_scroll)
                 
         except Exception as e:
             logger.error(f"Failed to load tags: {e}")
@@ -237,81 +308,98 @@ class TagsPage(QWidget):
             subprocess.run(['explorer', str(path)])
 
     def _load_next_tag_batch(self):
-        """加载下一批标签"""
+        """加载下一批标签（仅标签行，不展开音效；音效在右侧面板勾选标签后显示）"""
         if self._is_loading:
             return
         
         self._is_loading = True
-        
-        # 获取未加载的标签
-        all_tags = sorted(self._all_tag_groups.keys())
-        remaining_tags = [t for t in all_tags if t not in self._loaded_tags]
-        
-        if not remaining_tags:
+        try:
+            all_tags = sorted(self._all_tag_groups.keys())
+            remaining_tags = [t for t in all_tags if t not in self._loaded_tags]
+            if not remaining_tags:
+                return
+            
+            batch_tags = remaining_tags[:self._batch_size]
+            
+            for tag_name in batch_tags:
+                count = int(self._all_tag_groups.get(tag_name, 0))
+                tag_explanation = TAG_EXPLANATIONS.get(tag_name, "")
+                display_text = f"{tag_name} ({count})"
+                
+                # 列表视图：仅标签行
+                tag_item = QTreeWidgetItem([display_text])
+                tag_item.setIcon(0, FluentIcon.TAG.icon())
+                tag_item.setFont(0, QFont("Microsoft YaHei UI", 10, QFont.Weight.Bold))
+                tag_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "tag", "name": tag_name})
+                tag_item.setCheckState(0, Qt.CheckState.Checked if (tag_name in self._selected_items or self._is_all_selected) else Qt.CheckState.Unchecked)
+                tag_item.setToolTip(0, f"{tag_name}\n\n{tag_explanation}" if tag_explanation else tag_name)
+                self.tree.addTopLevelItem(tag_item)
+                
+                # 平铺视图：标签卡片（使用 QFrame 实现透明背景）
+                card = QFrame(self)
+                card.setFixedSize(140, 56)
+                card.setStyleSheet("""
+                    QFrame {
+                        background-color: transparent;
+                        border: 1px solid #3a3a3a;
+                        border-radius: 6px;
+                    }
+                    QFrame:hover {
+                        border-color: #5a5a5a;
+                    }
+                """)
+                card_layout = QVBoxLayout(card)
+                card_layout.setContentsMargins(10, 6, 10, 6)
+                card_layout.setSpacing(4)
+                cb = CheckBox(display_text)
+                cb.setObjectName("tag_check")
+                cb.setChecked(tag_name in self._selected_items or self._is_all_selected)
+                cb.stateChanged.connect(lambda state, tn=tag_name: self._on_tile_check_changed(tn, state))
+                card_layout.addWidget(cb)
+                self._tile_checkboxes[tag_name] = cb
+                self.tile_layout.addWidget(card)
+                
+                self._loaded_tags.append(tag_name)
+            
+            loaded, total = len(self._loaded_tags), len(self._all_tag_groups)
+            logger.info(f"Loaded {loaded}/{total} tags")
+            # 更新统计：全部加载完显示「共 N 个标签」，否则「已加载 X/N 个标签」
+            self.stats_label.setText(f"共 {total} 个标签" if loaded >= total else f"已加载 {loaded}/{total} 个标签")
+            # 若还有未加载标签且当前滚动条无范围（用户无法通过滚动触发加载），则继续加载下一批
+            self._schedule_next_batch_if_needed()
+        finally:
             self._is_loading = False
+
+    def _schedule_next_batch_if_needed(self):
+        """当还有剩余标签且滚动条不可用（maximum<=0）时，用定时器调度加载下一批，避免只显示首批 20 个。"""
+        if len(self._loaded_tags) >= len(self._all_tag_groups):
             return
-        
-        # 加载下一批
-        batch_tags = remaining_tags[:self._batch_size]
-        
-        for tag_name in batch_tags:
-            files = self._all_tag_groups[tag_name]
-            
-            # 获取标签解释
-            tag_explanation = TAG_EXPLANATIONS.get(tag_name, "")
-            
-            # Root Item: Tag (添加解释和复选框)
-            display_text = f"{tag_name} ({len(files)})"
-            
-            tag_item = QTreeWidgetItem([display_text, "", "", ""])
-            tag_item.setIcon(0, FluentIcon.TAG.icon())
-            tag_item.setFont(0, QFont("Microsoft YaHei UI", 10, QFont.Weight.Bold))
-            tag_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "tag", "name": tag_name})
-            tag_item.setCheckState(0, Qt.CheckState.Unchecked)  # 添加复选框
-            
-            # 设置 tooltip 显示完整解释
-            if tag_explanation:
-                tag_item.setToolTip(0, f"{tag_name}\n\n{tag_explanation}")
-            else:
-                tag_item.setToolTip(0, tag_name)
-            
-            self.tree.addTopLevelItem(tag_item)
-            
-            # Children: Files
-            for f in files:
-                duration_str = f"{int(f.duration//60):02d}:{int(f.duration%60):02d}"
-                
-                file_item = QTreeWidgetItem([f.filename, duration_str, f.format, ""])
-                file_item.setIcon(0, FluentIcon.MUSIC.icon())
-                file_item.setData(0, Qt.ItemDataRole.UserRole, {
-                    "type": "file", 
-                    "path": f.file_path, 
-                    "id": f.id,
-                    "tag": tag_name
-                })
-                
-                # 添加播放按钮
-                play_btn = TransparentToolButton(FluentIcon.PLAY)
-                play_btn.setFixedSize(28, 28)
-                play_btn.clicked.connect(lambda checked, fp=f.file_path: self.play_file.emit(fp))
-                self.tree.setItemWidget(file_item, 3, play_btn)
-                
-                tag_item.addChild(file_item)
-            
-            tag_item.setExpanded(True)
-            self._loaded_tags.append(tag_name)
-        
-        self._is_loading = False
-        logger.info(f"Loaded {len(self._loaded_tags)}/{len(self._all_tag_groups)} tags")
+        scrollbar = self.tree.verticalScrollBar() if self.view_stack.currentIndex() == 0 else self.tile_scroll.verticalScrollBar()
+        if scrollbar is None or scrollbar.maximum() > 0:
+            return
+        QTimer.singleShot(0, self._load_next_tag_batch)
+    
+    def _on_tile_check_changed(self, tag_name: str, state: int):
+        """平铺视图复选框变化：与列表逻辑一致，更新选中集合并刷新音效列表"""
+        checked = state == Qt.CheckState.Checked.value
+        if checked:
+            self._selected_items.add(tag_name)
+        else:
+            self._selected_items.discard(tag_name)
+            self._is_all_selected = False
+            self.select_all_cb.blockSignals(True)
+            self.select_all_cb.setChecked(False)
+            self.select_all_cb.blockSignals(False)
+        self._update_selected_count()
+        self._schedule_tags_panel_update()
     
     def _on_scroll(self, value):
-        """滚动事件 - 触发懒加载"""
-        scrollbar = self.tree.verticalScrollBar()
-        
-        # 滚动到底部 80% 时加载下一批
-        if scrollbar.maximum() > 0 and value >= scrollbar.maximum() * 0.8:
-            if len(self._loaded_tags) < len(self._all_tag_groups):
-                self._load_next_tag_batch()
+        """滚动事件 - 触发懒加载（列表/平铺共用，由触发滚动的 scrollbar 判断）"""
+        scrollbar = self.sender()
+        if scrollbar is None or scrollbar.maximum() <= 0:
+            return
+        if value >= scrollbar.maximum() * 0.8 and len(self._loaded_tags) < len(self._all_tag_groups):
+            self._load_next_tag_batch()
     
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
         """双击播放音频文件"""
@@ -337,16 +425,22 @@ class TagsPage(QWidget):
             self._is_all_selected = False
             self._selected_items.clear()
             
-            # 取消 UI 中已加载标签的选中状态
             self.tree.blockSignals(True)
             for i in range(self.tree.topLevelItemCount()):
                 item = self.tree.topLevelItem(i)
                 item.setCheckState(0, Qt.CheckState.Unchecked)
-                self._set_children_checked(item, False)
             self.tree.blockSignals(False)
+            
+            for cb in self._tile_checkboxes.values():
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
             
             self.selected_label.setText("已选 0")
             self.delete_btn.setEnabled(False)
+        
+        # 防抖后更新音效列表
+        self._schedule_tags_panel_update()
     
     def _set_children_checked(self, parent_item: QTreeWidgetItem, checked: bool):
         """递归设置子节点的选中状态"""
@@ -380,6 +474,54 @@ class TagsPage(QWidget):
         
         # 更新统计
         self._update_selected_count()
+        # 防抖后更新音效列表
+        self._schedule_tags_panel_update()
+    
+    def _schedule_tags_panel_update(self):
+        """防抖：短时间内的多次勾选只触发一次音效列表更新"""
+        self._tags_panel_update_timer.start()
+    
+    def _update_audio_files_panel_from_tags(self):
+        """根据当前选中的标签，收集文件路径并发出 tags_selection_changed"""
+        if self._is_all_selected:
+            tag_names = list(self._all_tag_groups.keys())
+        else:
+            tag_names = list(self._selected_items)
+        
+        if not tag_names:
+            self.tags_selection_changed.emit("", [])
+            return
+        
+        path_set = set()
+        try:
+            with session_scope() as session:
+                q = session.query(AudioFile.file_path).join(AudioFileTag)
+                if not self._is_all_selected:
+                    q = q.filter(AudioFileTag.tag.in_(tag_names))
+                q = q.distinct()
+                processed = 0
+                for (path_str,) in q.yield_per(1000):
+                    if path_str:
+                        path_set.add(str(path_str))
+                    processed += 1
+                    if processed % 1000 == 0:
+                        QApplication.processEvents()
+        except Exception as e:
+            logger.error(f"Failed to build file list from tags: {e}")
+            NotificationHelper.error(self, "构建文件列表失败", str(e))
+            self.tags_selection_changed.emit("", [])
+            return
+        
+        paths = sorted(path_set)
+        if len(tag_names) == 1:
+            display_name = tag_names[0]
+        elif len(tag_names) <= 3:
+            display_name = ", ".join(tag_names)
+        else:
+            display_name = f"{tag_names[0]}, {tag_names[1]} +{len(tag_names) - 2}个"
+        
+        logger.info(f"Tags selection: {len(paths)} files from {len(tag_names)} tags -> sound list")
+        self.tags_selection_changed.emit(display_name, paths)
     
     def _update_selected_count(self):
         """更新选中数量显示"""

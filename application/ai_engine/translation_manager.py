@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
 
 from .base import (
@@ -23,6 +23,60 @@ from .service_factory import AIServiceFactory
 from .translation_cache import TranslationCache
 
 logger = logging.getLogger(__name__)
+
+
+def get_translation_config_from_app(system_prompt: str = "") -> Tuple[Optional[AIServiceConfig], Optional[str]]:
+    """
+    从「设置 -> AI 服务商配置」读取当前翻译模型配置，供标签翻译、批量翻译等统一使用。
+    支持 DeepSeek / OpenAI / 豆包 / 本地模型（Ollama、LM Studio 等），无 DeepSeek 硬编码。
+    返回 (AIServiceConfig, None) 或 (None, error_message)。
+    """
+    try:
+        from transcriptionist_v3.core.config import AppConfig
+    except Exception as e:
+        logger.debug(f"get_translation_config_from_app: AppConfig failed: {e}")
+        return None, "无法读取配置"
+
+    model_index = int(AppConfig.get("ai.model_index", 0))
+    api_key = (AppConfig.get("ai.api_key", "") or "").strip()
+
+    # 与设置页一致：0=DeepSeek, 1=OpenAI, 2=豆包, 3=本地模型（Ollama / LM Studio）
+    provider_model_map = {
+        0: ("deepseek", "deepseek-chat", "https://api.deepseek.com/v1"),
+        1: ("openai", "gpt-4o-mini", "https://api.openai.com/v1"),
+        2: ("doubao", "doubao-pro-4k", "https://ark.cn-beijing.volces.com/api/v3"),
+        3: ("local", None, None),  # 使用 ai.local_model_name / ai.local_base_url
+    }
+    t = provider_model_map.get(model_index, provider_model_map[0])
+    provider_id, default_model, default_base = t
+
+    if provider_id == "local":
+        base_url = (AppConfig.get("ai.local_base_url", "") or "").strip()
+        model_name = (AppConfig.get("ai.local_model_name", "") or "").strip()
+        if not base_url:
+            base_url = "http://localhost:1234/v1"
+        if not model_name:
+            model_name = "local"
+        api_key = ""
+        if not base_url or not model_name:
+            return None, "请在设置中配置本地模型的 Base URL 和模型名称（Ollama / LM Studio）"
+    else:
+        base_url = default_base or ""
+        model_name = default_model or ""
+        if not api_key:
+            return None, "请在设置 -> AI 配置 中配置 API 密钥"
+
+    config = AIServiceConfig(
+        provider_id=provider_id,
+        api_key=api_key,
+        base_url=base_url,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        timeout=30,
+        max_tokens=256,
+        temperature=0.3,
+    )
+    return config, None
 
 
 @dataclass
@@ -60,7 +114,67 @@ class TranslationManager:
         return cls._instance
     
     def configure(self, config: AIServiceConfig) -> bool:
-        """配置翻译服务"""
+        """配置翻译服务
+        
+        优先级：
+        1. 如果全局设置中启用了 HY-MT1.5 ONNX 专用翻译模型，且本地模型文件完整可用，
+           则强制使用 HyMT15OnnxService 作为翻译服务（忽略传入的 provider_id）。
+        2. 否则，按照传入的配置和 ProviderRegistry 正常创建服务实例。
+        """
+        # 1. 检查是否启用 HY-MT1.5 ONNX 专用翻译模型
+        try:
+            from transcriptionist_v3.core.config import AppConfig
+            translation_model_type = AppConfig.get("ai.translation_model_type", "general")
+        except Exception as e:
+            logger.debug(f"Failed to read translation model type from AppConfig: {e}")
+            translation_model_type = "general"
+        
+        # 1.1 如果启用了 HY-MT1.5 ONNX，并且本地模型就绪，则强制使用本地 ONNX 模型 - 已注释（模型加载慢且翻译质量不稳定）
+        # if translation_model_type == "hy_mt15_onnx":
+        #     try:
+        #         from transcriptionist_v3.runtime.runtime_config import get_data_dir
+        #         from pathlib import Path
+        #         
+        #         model_dir = get_data_dir() / "models" / "hy-mt1.5-onnx"
+        #         required_files = ["model_fp16.onnx", "model_fp16.onnx_data", "model_fp16.onnx_data_1"]
+        #         has_required = all((model_dir / f).exists() for f in required_files)
+        #         has_tokenizer = (model_dir / "tokenizer.json").exists() or (model_dir / "tokenizer_config.json").exists()
+        #         
+        #         if has_required and has_tokenizer:
+        #             # 导入 HY-MT1.5 ONNX 服务实现
+        #             from transcriptionist_v3.application.ai_engine.providers.hy_mt15_onnx import HyMT15OnnxService
+        #             
+        #             # 为本地模型构建一个最小配置（不需要 API Key / Base URL）
+        #             service_config = AIServiceConfig(
+        #                 provider_id="hy_mt15_onnx",
+        #                 api_key="",
+        #                 base_url="",
+        #                 model_name="hy-mt1.5-onnx",
+        #                 system_prompt=getattr(config, "system_prompt", "") if config else "",
+        #             )
+        #             
+        #             service = HyMT15OnnxService(service_config)
+        #             
+        #             if not isinstance(service, TranslationService):
+        #                 logger.error("HY-MT1.5 ONNX service is not a TranslationService")
+        #             else:
+        #                 # 成功使用专用翻译模型
+        #                 self._service = service
+        #                 self._config = service_config
+        #                 logger.info("TranslationManager configured with HY-MT1.5 ONNX translation service")
+        #                 return True
+        #         else:
+        #             logger.warning("HY-MT1.5 ONNX model not fully available, falling back to general provider")
+        #     except Exception as e:
+        #         # 出现任何异常时，回退到通用 provider 流程
+        #         logger.warning(f"Failed to configure HY-MT1.5 ONNX translation service, fallback to general: {e}", exc_info=True)
+        
+        # 如果配置了 hy_mt15_onnx，强制回退到通用模型
+        if translation_model_type == "hy_mt15_onnx":
+            logger.info("HY-MT1.5 ONNX model is disabled, falling back to general provider")
+            translation_model_type = "general"
+        
+        # 2. 正常根据 provider 配置创建服务实例
         service = AIServiceFactory.create_service(config)
         if service is None:
             return False

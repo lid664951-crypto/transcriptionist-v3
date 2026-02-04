@@ -1,5 +1,6 @@
 
 import logging
+import subprocess
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 

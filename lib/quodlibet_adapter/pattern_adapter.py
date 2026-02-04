@@ -33,7 +33,7 @@ Pattern Syntax:
 - <tag> - Insert tag value
 - <tag|if|else> - Conditional: if tag exists, use 'if', otherwise 'else'
 - <tag1||tag2> - Disjunction: use tag1 if exists, otherwise tag2
-- Escape < > | with backslash: \< \> \|
+- Escape < > | with backslash: \\< \\> \\|
 """
 
 from __future__ import annotations

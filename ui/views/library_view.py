@@ -7,6 +7,7 @@ The main library view combining folder browser, audio list, and details panel.
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 

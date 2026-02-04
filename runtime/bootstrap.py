@@ -23,6 +23,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 降低第三方库（如 numba）过于详细的 DEBUG 输出，避免控制台被底层字节码分析日志刷屏
+for noisy_logger_name in [
+    "numba",
+    "numba.core.byteflow",
+    "numba.core.interpreter",
+]:
+    try:
+        logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
+    except Exception:
+        # 如果对应 logger 不存在，安全忽略
+        pass
+
 
 class BootstrapError(Exception):
     """Exception raised during bootstrap process."""

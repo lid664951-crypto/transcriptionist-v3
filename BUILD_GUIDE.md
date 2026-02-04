@@ -1,4 +1,4 @@
-# 音译家 v1.0.0 - 打包构建指南
+# 音译家 v1.1.0 - 打包构建指南
 
 ## 📋 目录
 1. [打包前检查](#打包前检查)
@@ -53,6 +53,25 @@ transcriptionist_v3/
 - ✅ 微信二维码: `ui/resources/images/wechat_qr.png`
 - ✅ 样式文件: `ui/resources/styles/workstation_dark.qss`
 
+### 4. 打包审计要点（保证“能打开、能用”）
+
+- **执行目录**：必须在项目根目录（即 `transcriptionist_v3` 所在目录）下执行 `build.bat` 或 `pyinstaller build.spec`，不要在其他层级执行。
+- **pathex**：`build.spec` 已设置 `pathex=[project_root, parent_root]`，保证 Analysis 阶段能正确解析 `from transcriptionist_v3.xxx`，避免打包后缺模块导致打不开。
+- **无 Python 环境**：打包结果为“绿色版”目录 + 可选安装包；主程序与 `metadata_worker.exe` 同目录，无需本机安装 Python 即可运行；并行元数据提取在打包环境下会调用同目录的 `metadata_worker.exe`。
+- **不打包敏感/用户数据**：`config/`、`data/`（数据库、AI 模型）不打入包内，首次运行会在程序目录下自动创建或由用户配置。
+- **AI 检索模型（CLAP）**：模型目录为 `data/models/larger-clap-general`；`audio_model.onnx`、`text_model.onnx` 由用户在软件内下载；`preprocess_audio.onnx`（+ `.onnx.data`）随包分发，打包前需运行 `py scripts/export_clap_preprocess_onnx.py`。
+
+### 5. 当前打包配置（以 build.spec / installer.iss 为准）
+
+| 项 | 值 |
+|----|-----|
+| 主程序 exe 名 | `音译家 AI音效管理工具1.1.0.exe` |
+| 绿色版输出目录 | `dist/音译家 AI音效管理工具1.1.0/` |
+| 后台进程 | `metadata_worker.exe`（同目录） |
+| 安装包输出（BUILD_INSTALLER=1） | `dist/音译家 AI音效管理工具1.1.0.exe` |
+| CLAP 模型目录 | `data/models/larger-clap-general`（preprocess_audio.onnx 随包；audio/text_model 软件内下载） |
+| 翻译/打标 | 走「设置 -> AI 服务商配置」与「AI 批量翻译性能」；translation_manager、openai_compatible、ai_jobs 等已打入包内 |
+
 ---
 
 ## 🎯 推荐打包方案
@@ -101,9 +120,9 @@ pyinstaller --name="音译家" --windowed --icon=ui/resources/icons/app_icon.ico
 ### 步骤 4: 测试打包结果
 
 ```bash
-# 打包后的文件在 dist/ 目录
-cd dist/音译家
-音译家.exe
+# 打包后的文件在 dist/ 目录（目录名与 build.spec 中 COLLECT name 一致）
+cd dist/音译家 AI音效管理工具1.1.0
+音译家 AI音效管理工具1.1.0.exe
 ```
 
 ---
@@ -450,24 +469,24 @@ datas += [
    iscc installer.iss
    ```
 
-### installer.iss
+### installer.iss（示例，实际以项目根目录 installer.iss 为准，应用名与输出见上文「当前打包配置」表）
 
 ```ini
 [Setup]
 AppName=音译家 AI音效管理工具
-AppVersion=1.0.0
+AppVersion=1.1.0
 AppPublisher=音译家开发者
 AppPublisherURL=https://github.com/your-repo
 DefaultDirName={autopf}\Transcriptionist
 DefaultGroupName=音译家
 OutputDir=output
-OutputBaseFilename=音译家_v1.0.0_Setup
+OutputBaseFilename=音译家_v1.1.0_Setup
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 LicenseFile=LICENSE
 SetupIconFile=ui\resources\icons\app_icon.ico
-UninstallDisplayIcon={app}\音译家.exe
+UninstallDisplayIcon={app}\音译家 AI音效管理工具1.1.0.exe
 PrivilegesRequired=admin
 
 [Languages]
@@ -478,16 +497,16 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "quicklaunchicon"; Description: "创建快速启动栏快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
-Source: "dist\音译家\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\音译家 AI音效管理工具1.1.0\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\音译家"; Filename: "{app}\音译家.exe"
+Name: "{group}\音译家 AI音效管理工具1.1.0"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"
 Name: "{group}\卸载音译家"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\音译家"; Filename: "{app}\音译家.exe"; Tasks: desktopicon
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\音译家"; Filename: "{app}\音译家.exe"; Tasks: quicklaunchicon
+Name: "{autodesktop}\音译家 AI音效管理工具1.1.0"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Tasks: desktopicon
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\音译家"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Tasks: quicklaunchicon
 
 [Run]
-Filename: "{app}\音译家.exe"; Description: "启动音译家"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Description: "启动音译家"; Flags: nowait postinstall skipifsilent
 ```
 
 ---
@@ -517,9 +536,9 @@ pyinstaller build.spec
 ### 3. 测试程序
 
 ```bash
-# 运行打包后的程序
-cd dist\音译家
-音译家.exe
+# 运行打包后的程序（目录与主程序名以 build.spec 为准）
+cd dist\音译家 AI音效管理工具1.1.0
+音译家 AI音效管理工具1.1.0.exe
 ```
 
 ### 4. 创建安装包
@@ -532,8 +551,9 @@ iscc installer.iss
 ### 5. 最终产物
 
 ```
-output/
-└── 音译家_v1.0.0_Setup.exe  (约 200-300MB)
+dist/
+├── 音译家 AI音效管理工具1.1.0/   （绿色版目录，含主程序与 metadata_worker.exe）
+└── 音译家 AI音效管理工具1.1.0.exe  （安装包，约 200–300MB，需 BUILD_INSTALLER=1 时生成）
 ```
 
 ---

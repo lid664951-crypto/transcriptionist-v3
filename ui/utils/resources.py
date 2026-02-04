@@ -63,6 +63,21 @@ def get_icon_path(icon_name: str) -> Path:
     return get_resource_path(f"resources/icons/{icon_name}")
 
 
+def get_app_icon_path() -> Path:
+    """
+    获取应用主图标路径（用于窗口/任务栏）。
+    Windows 上优先返回 .ico（多分辨率，任务栏/Alt+Tab 显示更稳定），否则 .png。
+    """
+    import sys as _sys
+    ico_path = get_resource_path("resources/icons/app_icon.ico")
+    png_path = get_resource_path("resources/icons/app_icon.png")
+    if _sys.platform == "win32" and ico_path.exists():
+        return ico_path
+    if png_path.exists():
+        return png_path
+    return ico_path if ico_path.exists() else png_path
+
+
 def get_image_path(image_name: str) -> Path:
     """
     获取图片文件路径的快捷方法

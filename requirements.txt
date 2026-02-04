@@ -1,36 +1,40 @@
-# Transcriptionist v3 - 核心依赖
-# 安装命令: pip install -r requirements.txt
+# Transcriptionist v3 - Core dependencies
+# Install: pip install -r requirements.txt
+# 打包环境需额外安装: pyinstaller, pillow（build.bat 会安装）；AI 功能需 onnxruntime、librosa 等（build.spec 会 collect_all）
 
-# ============================================================
-# 数据库
-# ============================================================
+# GUI（必须）
+PySide6>=6.6.0
+qfluentwidgets>=1.5.0
+qframelesswindow>=0.1.0
+
+# Database
 SQLAlchemy>=2.0.0
 alembic>=1.12.0
 
-# ============================================================
-# 音频处理
-# ============================================================
-mutagen>=1.47.0          # 音频元数据提取（参考Quod Libet）
-soundfile>=0.12.0        # 音频文件读写
-pygame>=2.5.0            # 音频播放
-pyloudnorm>=0.1.1        # 响度标准化
+# Audio
+mutagen>=1.47.0
+soundfile>=0.12.0
+pygame>=2.5.0
+pyloudnorm>=0.1.1
 
-# ============================================================
-# AI/机器学习
-# ============================================================
-numpy>=1.24.0            # 数值计算基础
-scikit-learn>=1.3.0      # 音频分类、聚类
-librosa>=0.10.0          # 音频分析（波形、频谱）
+# AI / ML
+numpy>=1.24.0
+scikit-learn>=1.3.0
+librosa>=0.10.0
 
-# ============================================================
-# 网络/异步
-# ============================================================
-aiohttp>=3.9.0           # 异步HTTP（Freesound API）
-aiofiles>=23.0.0         # 异步文件操作
+# Network / Async
+aiohttp>=3.9.0
+aiofiles>=23.0.0
 
-# ============================================================
-# 工具库
-# ============================================================
-watchdog>=3.0.0          # 文件系统监控
-pydantic>=2.0.0          # 数据验证
-pydantic-settings>=2.0.0 # 配置管理
+# Utils
+watchdog>=2.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+openpyxl>=3.1.0
+psutil>=5.9.0
+
+# 打包/可选（打包时 build.spec 会 collect_all，开发可按需安装）:
+# onnxruntime>=1.16.0 或 onnxruntime-directml（GPU）
+# numba（librosa JIT）
+# tokenizers（CLAP 文本编码）
+# scipy（librosa 依赖）

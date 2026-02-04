@@ -20,14 +20,16 @@ class MusicGenPromptOptimizer:
         "a precise English prompt that MusicGen can understand.\n"
         "Rules:\n"
         "1. Output ONLY the English prompt, no explanations.\n"
-        "2. Use professional music/audio terminology (e.g., 'whoosh' not '呼呼声').\n"
-        "3. Include mood, tempo, instruments, and style when relevant.\n"
-        "4. Keep it concise (under 50 words).\n"
-        "5. Remove filler words like 'I want', 'please generate', etc.\n"
+        "2. Use concrete music/audio terminology (e.g., 'whoosh transition sound', 'deep sub boom').\n"
+        "3. Always include: genre/style, main instruments, mood, and tempo (or words like 'slow', 'medium', 'fast').\n"
+        "4. Avoid long stories or scene descriptions. Describe the SOUND itself, not a movie plot.\n"
+        "5. Keep it concise (ideally 15‑30 words).\n"
+        "6. Remove filler words like 'I want', 'please generate', etc.\n"
         "Examples:\n"
-        "- '欢快的钢琴曲' -> 'cheerful piano melody with upbeat tempo and bright tones'\n"
-        "- '紧张的电影配乐' -> 'intense cinematic soundtrack with dramatic strings'\n"
-        "- '呼呼的转场声' -> 'whoosh swish transition sound effect'"
+        "- '欢快的钢琴曲' -> 'cheerful piano melody with bright chords, upbeat tempo, soft reverb, 120 bpm'\n"
+        "- '紧张的电影配乐' -> 'tense cinematic soundtrack with low strings, heavy percussion hits, dark atmosphere, slow tempo 70 bpm'\n"
+        "- '呼呼的转场声' -> 'short whoosh swish transition sound effect with airy high frequencies'\n"
+        "- '城市街道环境氛围' -> 'urban city street ambience with distant traffic, car passes, light crowd noise, steady background hum'"
     )
     
     def __init__(self):

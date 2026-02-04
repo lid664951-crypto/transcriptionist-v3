@@ -77,6 +77,13 @@ class TranslationCache:
         entry = self._cache.get(key)
         
         if entry:
+            # 检测无效缓存：如果原文 == 译文，说明之前翻译失败，删除并返回 None
+            if entry.original == entry.translated:
+                del self._cache[key]
+                self._dirty = True
+                logger.debug(f"Removed invalid cache entry (original == translated): {text[:30]}...")
+                return None
+            
             entry.hit_count += 1
             self._dirty = True
             return entry.translated

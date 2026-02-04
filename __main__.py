@@ -28,6 +28,24 @@ def main() -> int:
     # 必须在程序最开始调用，否则多进程功能会失败
     multiprocessing.freeze_support()
     
+    # Windows 11 任务栏图标修复：必须在导入 Qt 之前设置 AppUserModelID
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'com.transcriptionist.ai-sound-manager.1.1.0'
+            )
+        except Exception:
+            pass  # 非关键，失败不影响运行
+    
+    # Windows 下显式设置 spawn 模式（确保子进程能正确启动）
+    if sys.platform == 'win32':
+        try:
+            multiprocessing.set_start_method('spawn', force=True)
+        except RuntimeError:
+            # 已经设置过了，忽略
+            pass
+    
     # Disable Numba debug logging before any imports
     import os
     os.environ['NUMBA_DISABLE_JIT'] = '0'  # Keep JIT enabled for performance
@@ -153,4 +171,11 @@ def run_cli() -> int:
 
 
 if __name__ == "__main__":
+    # PyInstaller 多进程：必须在入口最先调用
+    multiprocessing.freeze_support()
+    # 打包 exe 时，子进程由 multiprocessing 以 -c "from multiprocessing.spawn import main; main(...)" 启动。
+    # 若不在此执行该命令并退出，子进程会再次跑主流程（GUI），导致 Pool 子进程无法正常干活。
+    if getattr(sys, 'frozen', False) and len(sys.argv) >= 3 and sys.argv[1] == '-c':
+        exec(compile(sys.argv[2], '<string>', 'exec'))
+        sys.exit(0)
     sys.exit(run_cli())

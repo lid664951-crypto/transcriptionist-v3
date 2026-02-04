@@ -62,6 +62,14 @@ class AudioFile(Base):
     
     # Metadata
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    translated_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
+    # AI processing status (0: pending, 1: done, 2: failed)
+    index_status: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    index_version: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    tag_status: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    tag_version: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    translation_status: Mapped[int] = mapped_column(Integer, default=0, index=True)
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -79,13 +87,16 @@ class AudioFile(Base):
         "Project", secondary=project_files, back_populates="files"
     )
     
-    # Indexes
+    # Indexes（含复合索引以优化百万级查询：格式+时长、采样率+位深、常见搜索组合）
     __table_args__ = (
         Index('idx_audio_files_filename', 'filename'),
         Index('idx_audio_files_hash', 'content_hash'),
         Index('idx_audio_files_duration', 'duration'),
         Index('idx_audio_files_sample_rate', 'sample_rate'),
         Index('idx_audio_files_format', 'format'),
+        Index('idx_audio_files_format_duration', 'format', 'duration'),
+        Index('idx_audio_files_sample_bit_depth', 'sample_rate', 'bit_depth'),
+        Index('idx_audio_files_search', 'filename', 'duration', 'format'),
     )
     
     def __repr__(self) -> str:
@@ -107,10 +118,27 @@ class AudioFileTag(Base):
     
     __table_args__ = (
         Index('idx_audio_file_tags_tag', 'tag'),
+        Index('idx_audio_file_tags_audio_file_id', 'audio_file_id'),
     )
     
     def __repr__(self) -> str:
         return f"<AudioFileTag(id={self.id}, tag='{self.tag}')>"
+
+
+class ImportQueue(Base):
+    """导入队列表：记录待入库的音频文件路径。"""
+    __tablename__ = "import_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_path: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False, index=True)
+    root_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True, index=True)
+    status: Mapped[int] = mapped_column(Integer, default=0, index=True)  # 0: pending, 1: processing, 2: done, 3: skipped, 4: failed
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<ImportQueue(id={self.id}, status={self.status}, path='{self.file_path}')>"
 
 
 class AudioFileCustomField(Base):
@@ -252,3 +280,80 @@ class RenameHistory(Base):
     
     def __repr__(self) -> str:
         return f"<RenameHistory(id={self.id}, old='{self.old_filename}', new='{self.new_filename}')>"
+
+
+class Job(Base):
+    """
+    Background job for long-running tasks (indexing/tagging/translation).
+    """
+    __tablename__ = 'jobs'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # pending/running/paused/failed/done
+    selection: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    params: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    processed: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    checkpoint: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    items: Mapped[List["JobItem"]] = relationship(
+        "JobItem", back_populates="job", cascade="all, delete-orphan"
+    )
+    index_shards: Mapped[List["IndexShard"]] = relationship(
+        "IndexShard", back_populates="job", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Job(id={self.id}, type='{self.job_type}', status='{self.status}')>"
+
+
+class JobItem(Base):
+    """Items bound to a job (used for explicit file list selection)."""
+    __tablename__ = 'job_items'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey('jobs.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    audio_file_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('audio_files.id', ondelete='CASCADE'), nullable=True, index=True
+    )
+    file_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True, index=True)
+    status: Mapped[int] = mapped_column(Integer, default=0, index=True)  # 0 pending, 1 done, 2 failed
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    job: Mapped["Job"] = relationship("Job", back_populates="items")
+
+    def __repr__(self) -> str:
+        return f"<JobItem(id={self.id}, job_id={self.job_id}, status={self.status})>"
+
+
+class IndexShard(Base):
+    """Chunked index shard metadata."""
+    __tablename__ = 'index_shards'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey('jobs.id', ondelete='SET NULL'), nullable=True, index=True
+    )
+    shard_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+    start_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    end_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    model_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    job: Mapped[Optional["Job"]] = relationship("Job", back_populates="index_shards")
+
+    def __repr__(self) -> str:
+        return f"<IndexShard(id={self.id}, shard='{self.shard_path}')>"

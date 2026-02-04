@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from transcriptionist_v3.core.config import AppConfig
+
 from ..base import (
     AIResult,
     AIResultStatus,
@@ -181,11 +183,16 @@ class OpenAICompatibleService(TranslationService):
     
     def _get_concurrency_limit(self, provider_id: str) -> int:
         """根据供应商分配并发上限"""
+        # 允许通过全局配置覆盖（设置页中的“AI翻译并发数”）
+        override = AppConfig.get("ai.translate_concurrency", None)
+        if isinstance(override, int) and override >= 1:
+            return override
+
         limits = {
-            "deepseek": 20,    # 恢复高并发
+            "deepseek": 20,    # 默认高并发
             "doubao": 20,
             "volcengine": 20,
-            "openai": 5,      # 默认为 Tier 1 安全限制
+            "openai": 5,       # 默认为 Tier 1 安全限制
         }
         return limits.get(provider_id, 2)
     
@@ -205,14 +212,34 @@ class OpenAICompatibleService(TranslationService):
     def _get_api_url(self) -> str:
         """获取API URL"""
         base_url = self._config.base_url.strip().rstrip("/")
+        
+        # 自动修正常见错误路径（如 /v8, /v2, /v3）
+        if base_url.endswith("/v8") or base_url.endswith("/v2") or base_url.endswith("/v3"):
+            logger.warning(f"Detected incorrect API version path in base_url: {base_url}, correcting to /v1")
+            base_url = base_url.rsplit("/", 1)[0] + "/v1"
+        
+        # 如果 base_url 已经包含 /chat/completions，直接返回
+        if "/chat/completions" in base_url:
+            return base_url
+        
+        # 确保 base_url 以 /v1 结尾（兼容 Ollama/LM Studio）
+        if not base_url.endswith("/v1"):
+            # 如果 base_url 以 /v 开头但版本号不对，修正为 /v1
+            if "/v" in base_url:
+                base_url = base_url.rsplit("/v", 1)[0] + "/v1"
+            else:
+                # 如果没有版本号，添加 /v1
+                base_url = f"{base_url}/v1"
+        
         return f"{base_url}/chat/completions"
     
     def _get_headers(self) -> Dict[str, str]:
-        """获取请求头"""
+        """获取请求头。Ollama 文档要求传 Authorization 但会忽略值，传 Bearer ollama 以兼容。"""
         headers = {"Content-Type": "application/json"}
-        if self._config.api_key:
-            api_key = self._config.api_key.strip()
-            headers["Authorization"] = f"Bearer {api_key}"
+        if self._config.api_key and self._config.api_key.strip():
+            headers["Authorization"] = f"Bearer {self._config.api_key.strip()}"
+        elif (self._config.provider_id or "").lower() == "local":
+            headers["Authorization"] = "Bearer ollama"
         return headers
     
     def _get_system_prompt(self) -> str:
@@ -260,10 +287,20 @@ class OpenAICompatibleService(TranslationService):
         except json.JSONDecodeError:
             error_msg = error_text[:200]
         
-        if status_code == 401:
-            return "API Key 无效"
+        # 本地模型常见错误
+        if status_code == 404:
+            if "local" in self._config.provider_id.lower():
+                return f"模型未找到或服务未启动 (404): {error_msg}\n请检查：\n1. Ollama/LM Studio 是否已启动\n2. 模型名称是否正确\n3. Base URL 是否正确"
+            return f"资源未找到 (404): {error_msg}"
+        elif status_code == 401:
+            return "API Key 无效（本地模型通常不需要 API Key）"
         elif status_code == 429:
             return "触发频率限制 (Rate Limit)"
+        elif status_code == 0 or "Connection" in error_msg or "Failed to fetch" in error_msg:
+            # 连接错误（通常是本地服务未启动）
+            if "local" in self._config.provider_id.lower():
+                return f"无法连接到本地服务: {error_msg}\n请检查：\n1. Ollama/LM Studio 是否已启动\n2. Base URL：LM Studio 默认 http://localhost:1234/v1，Ollama 默认 http://localhost:11434/v1\n3. 防火墙是否阻止了连接"
+            return f"连接失败: {error_msg}"
         else:
             return f"API错误 ({status_code}): {error_msg}"
 
@@ -281,16 +318,42 @@ class OpenAICompatibleService(TranslationService):
         if not texts:
             return AIResult(status=AIResultStatus.SUCCESS, data=[])
         
-        # 将长列表分成小批次 (每批40个文件，权衡效率与稳定性)
-        chunk_size = 40
+        # 将长列表分成小批次：可通过配置调整 (ai.translate_chunk_size)
+        configured_chunk = AppConfig.get("ai.translate_chunk_size", 40)
+        try:
+            configured_chunk = int(configured_chunk)
+        except (TypeError, ValueError):
+            configured_chunk = 40
+        # 限制在合理区间内，避免设置过小/过大
+        if configured_chunk < 5:
+            logger.warning(f"translate_chunk_size {configured_chunk} is too small, clamping to 5")
+            configured_chunk = 5
+        if configured_chunk > 200:
+            logger.warning(f"translate_chunk_size {configured_chunk} is too large, clamping to 200")
+            configured_chunk = 200
+
+        chunk_size = configured_chunk
         chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        logger.info(f"translate_batch: split {len(texts)} texts into {len(chunks)} chunks (chunk_size={chunk_size})")
+        
+        # 动态读取并发数配置（每次调用时都重新读取，支持运行时修改）
+        current_concurrency = self._get_concurrency_limit(self._config.provider_id)
+        # 如果并发数改变了，更新 semaphore
+        if current_concurrency != self._concurrency_limit:
+            logger.info(f"Concurrency limit changed from {self._concurrency_limit} to {current_concurrency}, updating semaphore")
+            self._concurrency_limit = current_concurrency
+            self._semaphore = asyncio.Semaphore(self._concurrency_limit)
         
         # 统计变量
         progress_data = {"completed": 0, "total": len(texts)}
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
+        logger.info(f"translate_batch: processing {len(texts)} texts in {len(chunks)} chunks (chunk_size={chunk_size}, concurrency={current_concurrency})")
+        
         async def process_chunk(chunk: List[str], batch_idx: int) -> List[TranslationResult]:
+            logger.debug(f"process_chunk[{batch_idx}]: waiting for semaphore, chunk size={len(chunk)}")
             async with self._semaphore:
+                logger.info(f"process_chunk[{batch_idx}]: acquired semaphore, starting translation of {len(chunk)} items")
                 # 带有退避重试的请求
                 max_retries = 3
                 for attempt in range(max_retries):
@@ -310,10 +373,9 @@ class OpenAICompatibleService(TranslationService):
                             "max_tokens": self._config.max_tokens,
                         }
                         
-                        if self._config.provider_id in ("deepseek", "openai"):
+                        # Ollama / LM Studio 均支持 streaming 与 response_format（OpenAI 兼容）
+                        if self._config.provider_id in ("deepseek", "openai", "local"):
                             payload["response_format"] = {"type": "json_object"}
-                        
-                            # 开启流式模式以获得实时进度
                             payload["stream"] = True
                             
                             async with session.post(
@@ -347,43 +409,67 @@ class OpenAICompatibleService(TranslationService):
                                 content = ""
                                 item_count = 0
                                 last_progress_update = 0
+                                stream_done = False
                                 
-                                async for line in response.content:
-                                    line_str = line.decode('utf-8').strip()
-                                    if not line_str or line_str == "data: [DONE]":
-                                        continue
+                                try:
+                                    async for line in response.content:
+                                        line_str = line.decode('utf-8').strip()
+                                        if not line_str:
+                                            continue
                                         
-                                    if line_str.startswith("data: "):
-                                        try:
-                                            chunk_data = json.loads(line_str[6:])
-                                            delta = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                            if delta:
-                                                content += delta
-                                                # 启发式进度更新：检测 "translated" 字段或简单的行数/结构
-                                                # 简单方案：统计 "translated" 出现的次数 (虽然不一定完全准确，但足够给用户反馈)
-                                                # 为了避免重复计数，我们只在 content 增长时检查
-                                                current_count = content.count('"translated"')
-                                                if current_count > item_count:
-                                                    new_items = current_count - item_count
-                                                    item_count = current_count
-                                                    
-                                                    # 更新全局进度
-                                                    progress_data["completed"] += new_items
-                                                    # 确保不超过总数（因为最后还会校准）
-                                                    if progress_data["completed"] > progress_data["total"]:
-                                                        progress_data["completed"] = progress_data["total"] - 1
+                                        # 检查流结束标志
+                                        if line_str == "data: [DONE]":
+                                            stream_done = True
+                                            logger.debug(f"process_chunk[{batch_idx}]: received [DONE] signal")
+                                            break
+                                        
+                                        if line_str.startswith("data: "):
+                                            try:
+                                                chunk_data = json.loads(line_str[6:])
+                                                delta = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                                if delta:
+                                                    content += delta
+                                                    # 启发式进度更新：检测 "translated" 字段或简单的行数/结构
+                                                    # 简单方案：统计 "translated" 出现的次数 (虽然不一定完全准确，但足够给用户反馈)
+                                                    # 为了避免重复计数，我们只在 content 增长时检查
+                                                    current_count = content.count('"translated"')
+                                                    if current_count > item_count:
+                                                        new_items = current_count - item_count
+                                                        item_count = current_count
                                                         
-                                                    if progress_callback:
-                                                        progress_callback(
-                                                            progress_data["completed"], 
-                                                            progress_data["total"], 
-                                                            f"正在翻译: {progress_data['completed']}/{progress_data['total']}"
-                                                        )
-                                        except json.JSONDecodeError:
-                                            pass
+                                                        # 更新全局进度
+                                                        progress_data["completed"] += new_items
+                                                        # 确保不超过总数（因为最后还会校准）
+                                                        if progress_data["completed"] > progress_data["total"]:
+                                                            progress_data["completed"] = progress_data["total"] - 1
+                                                            
+                                                        if progress_callback:
+                                                            progress_callback(
+                                                                progress_data["completed"], 
+                                                                progress_data["total"], 
+                                                                f"正在翻译: {progress_data['completed']}/{progress_data['total']}"
+                                                            )
+                                            except json.JSONDecodeError as e:
+                                                logger.debug(f"process_chunk[{batch_idx}]: JSON decode error in stream: {e}")
+                                                pass
+                                    
+                                    # 如果没有收到 [DONE] 信号，记录警告
+                                    if not stream_done:
+                                        logger.warning(f"process_chunk[{batch_idx}]: stream ended without [DONE] signal, content length={len(content)}")
+                                except asyncio.TimeoutError:
+                                    logger.error(f"process_chunk[{batch_idx}]: stream timeout while reading response")
+                                    raise
+                                except Exception as e:
+                                    logger.error(f"process_chunk[{batch_idx}]: error reading stream: {e}", exc_info=True)
+                                    raise
                                 
                                 # 解析最终完整JSON
+                                if not content:
+                                    logger.warning(f"process_chunk[{batch_idx}]: empty content received, using fallback")
+                                    return [TranslationResult(original=t, translated=t) for t in chunk]
+                                
                                 results = self._parse_translation_response(content, chunk)
+                                logger.info(f"process_chunk[{batch_idx}]: completed, translated {len(results)}/{len(chunk)} items")
                                 
                                 # 进度校准：补齐这一批次剩余的计数
                                 # (如果 heuristics 漏掉了，或者最后 parse 出来比统计的多)
@@ -403,6 +489,14 @@ class OpenAICompatibleService(TranslationService):
                                             f"完成批次: {progress_data['completed']}/{progress_data['total']}"
                                         )
                                 
+                                # 确保返回的结果数量与输入一致
+                                if len(results) != len(chunk):
+                                    logger.warning(f"process_chunk[{batch_idx}]: result count mismatch: got {len(results)}, expected {len(chunk)}")
+                                    # 补齐缺失的结果
+                                    while len(results) < len(chunk):
+                                        idx = len(results)
+                                        results.append(TranslationResult(original=chunk[idx], translated=chunk[idx]))
+                                
                                 return results
                             
                     except asyncio.TimeoutError:
@@ -421,8 +515,10 @@ class OpenAICompatibleService(TranslationService):
                 return [TranslationResult(original=t, translated=t) for t in chunk]
 
         # 并发执行所有切片
+        logger.info(f"Starting {len(chunks)} concurrent tasks with concurrency limit {current_concurrency}")
         tasks = [process_chunk(chunk, i) for i, chunk in enumerate(chunks)]
         chunk_results = await asyncio.gather(*tasks)
+        logger.info(f"All {len(chunks)} chunks completed")
         
         # 合并结果
         all_results = []

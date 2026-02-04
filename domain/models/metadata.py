@@ -42,6 +42,9 @@ class AudioMetadata:
     # Original filename (for UI display)
     original_filename: str = ""
     
+    # Translated filename (after AI translation and renaming)
+    translated_name: Optional[str] = None
+    
     # Additional tags
     tags: List[str] = field(default_factory=list)
     

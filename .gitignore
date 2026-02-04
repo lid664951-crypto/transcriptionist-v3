@@ -139,3 +139,13 @@ clear_*.py
 import_*.py
 check_*.py
 convert_*.py
+
+# Additional exclusions for this project
+data/models/
+data/database/*.db-wal
+data/database/*.db-shm
+build_log.txt
+innosetup-*.exe
+get-pip.py
+backup_*.zip
+*.qoder/

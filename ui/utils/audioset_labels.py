@@ -96,5 +96,44 @@ AUDIOSET_LABELS = [
     "Inside, large room or hall", "Inside, public space", "Outside, urban or man-made", "Outside, rural or natural", 
     "Reverberation", "Echo", "Noise", "Environmental noise", "Static", "Mains hum", "Distortion", 
     "Sidetone", "Cacophony", "White noise", "Pink noise", "Throbbing", "Vibration", "Television", 
-    "Radio", "Field recording"
+"Radio", "Field recording"
+]
+
+
+# A curated subset of labels that are more suitable for
+# cinematic SFX libraries (impacts, whooshes, vehicles, weather, etc.)
+# Used by AI 智能打标 to避免过于抽象或偏音乐/语言类的标签。
+SFX_FOCUSED_LABELS = [
+    # Impacts / Explosions / Weapons
+    "Impact", "Crash", "Smash, crash", "Glass breaking", "Splinter",
+    "Thud", "Thump, thud", "Knock", "Door slam",
+    "Explosion", "Gunshot, gunfire", "Machine gun", "Artillery fire",
+    "Fireworks", "Firecracker", "Boom",
+
+    # Movements / Foley
+    "Footsteps", "Walking", "Running", "Tap", "Shuffle",
+    "Rustle", "Scratch", "Scrape", "Rub",
+
+    # Doors / Objects
+    "Door", "Drawer open/close", "Cupboard open/close", "Window",
+    "Chink, clink", "Shatter", "Keys jangling", "Coin (dropping)",
+
+    # Vehicles
+    "Car", "Truck", "Motorcycle", "Race car, auto racing",
+    "Engine", "Engine starting", "Idling", "Accelerating, revving, vroom",
+    "Car crash", "Vehicle horn", "Horn", "Air brake",
+    "Siren", "Emergency vehicle", "Police car (siren)",
+    "Ambulance (siren)", "Fire engine, fire truck (siren)",
+    "Train", "Train whistle", "Subway, metro, underground",
+    "Aircraft", "Aircraft engine", "Helicopter",
+
+    # Weather / Nature
+    "Wind", "Rustling leaves", "Thunderstorm", "Thunder",
+    "Rain", "Raindrop", "Rain on surface", "Stream",
+    "Waterfall", "Ocean", "Waves, surf",
+
+    # Fire / Energy / Ambience
+    "Fire", "Crackle", "Flame",
+    "Reverberation", "Echo",
+    "Noise", "White noise", "Pink noise",
 ]

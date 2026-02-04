@@ -43,33 +43,36 @@ class MetadataExtractor:
         if not MUTAGEN_AVAILABLE:
             logger.warning("Mutagen not available, using fallback extraction")
     
-    def extract(self, file_path: Path) -> Optional[AudioMetadata]:
+    def extract(self, file_path: Path, store_raw: bool = False) -> Optional[AudioMetadata]:
         """
         Extract metadata from an audio file.
+        P1 优化：默认 store_raw=False，仅提取音效相关字段（comment、original_filename、info），
+        百万级导入时避免 dict(audio.tags) 全量解析，显著缩短耗时。
         
         Args:
             file_path: Path to the audio file
+            store_raw: 若 True 则填充 metadata.raw（完整标签字典），用于需要展示全部 tag 的场景
             
         Returns:
             AudioMetadata: Extracted metadata, or None if extraction failed
         """
         file_path = Path(file_path)
-        
+
         if not file_path.exists():
             logger.warning(f"File not found: {file_path}")
             return None
-        
+
         try:
             if MUTAGEN_AVAILABLE:
-                return self._extract_with_mutagen(file_path)
+                return self._extract_with_mutagen(file_path, store_raw=store_raw)
             else:
                 return self._extract_fallback(file_path)
-                
+
         except Exception as e:
             logger.error(f"Failed to extract metadata from {file_path}: {e}")
             return None
-    
-    def _extract_with_mutagen(self, file_path: Path) -> AudioMetadata:
+
+    def _extract_with_mutagen(self, file_path: Path, store_raw: bool = False) -> AudioMetadata:
         """Extract metadata using Mutagen library."""
         suffix = file_path.suffix.lower()
         
@@ -121,11 +124,11 @@ class MetadataExtractor:
                 # WAV and AIFF may have ID3 tags
                 if hasattr(audio, 'tags') and audio.tags:
                     self._extract_comment_only_id3(audio, metadata)
-            
-            # Store raw metadata
-            if hasattr(audio, 'tags') and audio.tags:
+
+            # 仅当需要完整标签时再复制（百万级导入时跳过可显著减少 CPU 与内存）
+            if store_raw and hasattr(audio, 'tags') and audio.tags:
                 metadata.raw = dict(audio.tags)
-            
+
         except PermissionError as e:
             logger.warning(f"Permission denied when reading {file_path.name}: {e}")
             return self._extract_fallback(file_path)
@@ -364,3 +367,17 @@ def extract_metadata(file_path: Path) -> Optional[AudioMetadata]:
         AudioMetadata: Extracted metadata
     """
     return get_metadata_extractor().extract(file_path)
+
+
+def extract_one_for_pool(args: tuple) -> tuple:
+    """
+    供 multiprocessing.Pool 调用的可 pickle 函数：(idx, path_str) -> (idx, path_str, metadata_or_none)。
+    子进程内创建 MetadataExtractor，避免跨进程传递复杂对象。
+    """
+    idx, path_str = args
+    try:
+        extractor = MetadataExtractor()
+        meta = extractor.extract(Path(path_str))
+        return (idx, path_str, meta)
+    except Exception:
+        return (idx, path_str, None)

@@ -10,9 +10,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QTabWidget
+    QStackedWidget, QTabWidget, QSystemTrayIcon, QMenu
 )
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QIcon
 
 from qfluentwidgets import (
     setTheme, Theme, setThemeColor, isDarkTheme,
@@ -26,6 +26,8 @@ from .panels.resource_panel import ResourcePanel
 from .panels.batch_center_panel import BatchCenterPanel
 from .panels.ai_inspector_panel import AIInspectorPanel
 from .panels.timeline_panel import TimelinePanel
+from .panels.audio_files_panel import AudioFilesPanel
+from .widgets.qt_waveform_preview import WaveformPreviewWidget
 
 # 导入核心页面
 from .pages.library_page_qt import LibraryPage
@@ -53,18 +55,27 @@ class TranscriptionistWindow(FramelessWindow):
         super().__init__()
         
         # 1. 窗口基础设置
-        self.setWindowTitle("音译家 AI 音效管理工具 v1.0.0")
+        self.setWindowTitle("音译家 AI 音效管理工具 v1.1.0")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 750)
         
-        # 设置窗口图标
+        # 设置窗口图标（Windows 优先用 .ico，任务栏/Alt+Tab 显示更稳定）
+        # 注意：run_app() 中已经设置了 app.setWindowIcon，这里再次设置确保窗口也使用
         from PySide6.QtGui import QIcon
-        from .utils.resources import get_icon_path
-        icon_path = get_icon_path("app_icon.png")
+        from .utils.resources import get_app_icon_path
+        icon_path = get_app_icon_path()
         if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
-            # 同时设置应用程序图标（用于任务栏）
-            QApplication.setWindowIcon(QIcon(str(icon_path)))
+            try:
+                _icon = QIcon(str(icon_path))
+                # 设置窗口图标
+                self.setWindowIcon(_icon)
+                # 再次设置应用程序图标（Windows 11 可能需要）
+                QApplication.instance().setWindowIcon(_icon)
+                logger.debug(f"Window icon set from: {icon_path}")
+            except Exception as e:
+                logger.error(f"Failed to set window icon: {e}")
+        else:
+            logger.warning(f"Application icon not found at {icon_path}")
         
         # 2. 主题与特效
         setThemeColor("#3399ff")
@@ -93,6 +104,12 @@ class TranscriptionistWindow(FramelessWindow):
         # 5. 样式应用
         self._apply_theme_style()
         self._center_window()
+        
+        # 6. 系统托盘（Windows/Linux 支持）
+        self._setup_system_tray()
+        
+        # 7. 周期性刷新窗口图标（防止 Windows 释放图标句柄导致任务栏图标消失）
+        self._setup_icon_refresh_timer()
         
         logger.info("MainWindow Workstation implementation ready")
 
@@ -130,7 +147,7 @@ class TranscriptionistWindow(FramelessWindow):
         
         # 添加标题文本标签
         from PySide6.QtWidgets import QLabel
-        self.titleLabel = QLabel("音译家 AI 音效管理工具 v1.0.0", self)
+        self.titleLabel = QLabel("音译家 AI 音效管理工具 v1.1.0", self)
         self.titleLabel.setStyleSheet("""
             QLabel {
                 color: rgb(200, 200, 200);
@@ -194,6 +211,10 @@ class TranscriptionistWindow(FramelessWindow):
         
         mainLayout.addWidget(self.centralStack, 1)
         
+        # 波形预览（工作区与播放器之间的一条波形条）
+        self.waveformPreview = WaveformPreviewWidget(self)
+        mainLayout.addWidget(self.waveformPreview)
+        
         # 底部全局播放器
         self.playerBar = PlayerBar(self)
         mainLayout.addWidget(self.playerBar)
@@ -228,7 +249,13 @@ class TranscriptionistWindow(FramelessWindow):
         
         # --- B. 中央展示区 (Processing Center) ---
         self.batch_center = BatchCenterPanel()
-        self.workstation.add_center_tab(self.batch_center, "Main")
+        
+        # 新增：音效文件面板（放在AI翻译左侧）
+        self.audioFilesPanel = AudioFilesPanel(self)
+        self.audioFilesPanel.setStyleSheet("#audioFilesPanel { background-color: #1e1e1e; }")
+        self.batch_center.add_batch_tab(self.audioFilesPanel, "音效列表")
+        # 将库页面作为音效列表的数据提供者（懒加载使用全局索引 -> 文件信息）
+        self.audioFilesPanel.set_data_provider(self.libraryInterface.get_file_info_by_index)
         
         # TODO: Audio Editor - 需要 encodec_encode 模型支持音频续写
         # self.audioEditorInterface = AudioEditorPage(self)
@@ -251,6 +278,8 @@ class TranscriptionistWindow(FramelessWindow):
         self.batch_center.add_batch_tab(self.aiSearchInterface, "AI 智能检索")
         self.batch_center.add_batch_tab(self.aiGenerationInterface, "AI 音乐工坊 实验室功能")
         
+        self.workstation.add_center_tab(self.batch_center, "Main")
+        
         # --- C. 其他功能整合进中央面板 (原右侧面板内容) ---
         # self.namingRulesInterface = NamingRulesPage(self) # 用户要求移除，因为已在AI翻译中集成
         self.settingsInterface = SettingsPage(self)
@@ -266,14 +295,30 @@ class TranscriptionistWindow(FramelessWindow):
         
         # 默认选中第一个
         self.resource_panel.set_active_tab(0)
-        self.batch_center.tabs.setCurrentIndex(1) # 翻译是核心
+        self.batch_center.tabs.setCurrentIndex(0) # 默认显示音效文件面板
         
         # --- 信号连接还原 ---
         self.libraryInterface.play_file.connect(self._on_play_file)
+        # v2: 注入库 provider，并使用轻量 selection_changed（避免几万文件路径列表导致卡顿）
+        self.aiTranslateInterface.set_library_provider(self.libraryInterface)
+        self.aiSearchInterface.set_library_provider(self.libraryInterface)
+        self.libraryInterface.selection_changed.connect(self.aiTranslateInterface.set_selection)
+        self.libraryInterface.selection_changed.connect(self.aiSearchInterface.set_selection)
+        # v1: 兼容旧通道（仅在小选择/单文件勾选时仍会发送）
         self.libraryInterface.files_checked.connect(self.aiTranslateInterface.set_selected_files)
         self.libraryInterface.files_checked.connect(self.aiSearchInterface.update_selection) # Connect Library -> AI Search
-        self.libraryInterface.request_ai_translate.connect(lambda: self.batch_center.tabs.setCurrentIndex(1))
-        self.libraryInterface.request_ai_search.connect(lambda: self.batch_center.tabs.setCurrentIndex(2)) # Fixed navigation
+        self.libraryInterface.request_ai_translate.connect(lambda: self.batch_center.tabs.setCurrentIndex(1))  # Tab 1 = AI翻译
+        self.libraryInterface.request_ai_search.connect(lambda: self.batch_center.tabs.setCurrentIndex(2)) # Tab 2 = AI检索
+        
+        # 新增：库板块文件夹点击 -> 音效文件面板
+        self.libraryInterface.folder_clicked.connect(self._on_folder_clicked)
+        # 标签板块选中标签 -> 音效列表（与库板块逻辑一致）
+        self.tagsInterface.tags_selection_changed.connect(self._on_tags_selection_changed)
+        
+        # 音效文件面板信号
+        self.audioFilesPanel.files_selected.connect(self.aiTranslateInterface.set_selected_files)
+        self.audioFilesPanel.files_selected.connect(self.aiSearchInterface.update_selection)
+        self.audioFilesPanel.request_play.connect(self._on_play_file)
         
         self.tagsInterface.play_file.connect(self._on_play_file) # Connect Tags -> Player
         
@@ -296,9 +341,10 @@ class TranscriptionistWindow(FramelessWindow):
         # AI Generation playback
         self.aiGenerationInterface.request_play.connect(self._on_play_file)
         
-        # AI 打标完成后自动刷新库和标签视图
+        # AI 打标完成后自动刷新库和标签视图（标签页/库页从 DB 重载；并刷新音效列表以显示已写入内存的标签）
         self.aiSearchInterface.tagging_finished.connect(self.libraryInterface.refresh)
         self.aiSearchInterface.tagging_finished.connect(self.tagsInterface.refresh)
+        self.aiSearchInterface.tagging_finished.connect(self._on_tagging_finished_refresh_list)
         
         # AI 打标批量更新信号连接
         # AI 打标批量更新信号连接
@@ -308,15 +354,23 @@ class TranscriptionistWindow(FramelessWindow):
         # Library Clear Synchronization
         self.libraryInterface.library_cleared.connect(self.aiSearchInterface.on_library_cleared)
         self.libraryInterface.library_cleared.connect(self.aiTranslateInterface.on_library_cleared)
+        # 清空音效库时，同步停止播放并清空波形/播放器显示
+        self.libraryInterface.library_cleared.connect(self._on_library_cleared)
+
+    def _on_tagging_finished_refresh_list(self):
+        """打标任务结束时刷新音效列表，确保最后一批标签也能显示。"""
+        try:
+            self.libraryInterface._refresh_audio_files_panel_after_tags_update()
+        except Exception as e:
+            logger.debug(f"Refresh audio list after tagging: {e}")
 
     def _on_tags_updated_refresh_tags_page(self, batch_updates: list):
-        """标签更新后刷新标签页面"""
+        """打标批量更新时不再每批全量刷新标签页，避免 6k+ 条时多次全库查询导致卡死/OOM。"""
+        # 标签页全量刷新仅在 tagging_finished 时执行一次（见 tagging_finished.connect(tagsInterface.refresh)）
         try:
-            # 刷新标签页面
-            self.tagsInterface.refresh()
-            logger.info(f"Tags page refreshed after batch update of {len(batch_updates)} files")
+            logger.debug(f"Tags batch update received ({len(batch_updates)} files), skipping full refresh until tagging finished")
         except Exception as e:
-            logger.error(f"Failed to refresh tags page: {e}")
+            logger.error(f"Failed to handle tags batch update: {e}")
 
     def _apply_theme_style(self):
         """应用专业深色主题样式"""
@@ -342,6 +396,25 @@ class TranscriptionistWindow(FramelessWindow):
         if self._audio_player.load(file_path):
             self._audio_player.play()
             self.playerBar.set_playing(True)
+            # 同步加载波形预览（简化同步实现，仅针对当前文件）
+            try:
+                self.waveformPreview.load_file(file_path)
+            except Exception as e:
+                logger.warning(f"Waveform preview failed for {file_path}: {e}")
+    
+    def _on_folder_clicked(self, folder_path: str, indices: list):
+        """库板块文件夹被点击，加载音效文件列表（懒加载：只传全局索引列表）"""
+        logger.info(f"Folder clicked in Library: {folder_path}, {len(indices)} files")
+        self.audioFilesPanel.set_folder_indices(folder_path, indices)
+        # 自动切换到音效文件面板
+        self.batch_center.tabs.setCurrentIndex(0)
+
+    def _on_tags_selection_changed(self, display_name: str, paths: list):
+        """标签板块选中标签变化，将选中标签下的音效填入音效列表（与库板块一致）"""
+        indices = self.libraryInterface.get_indices_by_paths(paths) if paths else []
+        self.audioFilesPanel.set_folder_indices(display_name, indices)
+        if display_name and indices:
+            self.batch_center.tabs.setCurrentIndex(0)
 
     def _toggle_settings(self):
         """切换设置页面显示"""
@@ -385,6 +458,7 @@ class TranscriptionistWindow(FramelessWindow):
             from PySide6.QtCore import Qt, QRectF
             from qfluentwidgets import PushButton, MessageBoxBase
             from .utils.resources import get_image_path
+            from pathlib import Path
             import logging
             
             logger = logging.getLogger(__name__)
@@ -403,8 +477,11 @@ class TranscriptionistWindow(FramelessWindow):
                     titleLabel.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent; margin-bottom: 10px;")
                     self.viewLayout.addWidget(titleLabel)
                     
-                    # 二维码（圆角处理）
-                    qr_path = get_image_path("wechat_qr.png")
+                    # 二维码 / 联系方式图片（圆角处理）
+                    # 优先使用项目资源目录中的 wx-CJ7L738a.jpg，找不到时回退到内置 wechat_qr.png
+                    qr_path = get_image_path("wx-CJ7L738a.jpg")
+                    if not qr_path.exists():
+                        qr_path = get_image_path("wechat_qr.png")
                     if qr_path.exists():
                         # 创建圆角二维码
                         class RoundedQRLabel(QLabel):
@@ -501,12 +578,38 @@ class TranscriptionistWindow(FramelessWindow):
     def _setup_player_connections(self):
         self._audio_player.state_changed.connect(lambda s: self.playerBar.set_playing(s == "playing"))
         self._audio_player.position_changed.connect(self.playerBar.set_position)
+        # 将播放器的进度同步到波形预览
+        self._audio_player.position_changed.connect(self.waveformPreview.set_position)
         self._audio_player.duration_changed.connect(self.playerBar.set_duration)
+        self._audio_player.duration_changed.connect(self.waveformPreview.set_duration)
         self._audio_player.media_ended.connect(self._on_media_ended)
 
     def _on_media_ended(self):
         self.playerBar.set_playing(False)
         self.playerBar.set_position(0)
+        self.waveformPreview.set_position(0)
+
+    def _on_library_cleared(self):
+        """
+        当库被清空时：
+        - 停止当前播放
+        - 释放当前媒体占用
+        - 重置底部播放器显示
+        - 清空波形预览
+        """
+        try:
+            self._audio_player.unload()
+        except Exception:
+            # 即使卸载失败，也尽量重置 UI，避免残留状态误导用户
+            self._audio_player.stop()
+
+        # 重置播放器 UI
+        self.playerBar.set_playing(False)
+        self.playerBar.set_position(0)
+        self.playerBar.set_track_info("未播放", "选择音效文件开始播放")
+
+        # 清空波形预览
+        self.waveformPreview.clear()
 
     def _connect_player_bar(self):
         self.playerBar.play_clicked.connect(self._audio_player.play)
@@ -516,10 +619,95 @@ class TranscriptionistWindow(FramelessWindow):
         self.playerBar.next_clicked.connect(lambda: self._audio_player.skip(5000))
         self.playerBar.position_changed.connect(self._audio_player.seek)
         self.playerBar.volume_changed.connect(lambda v: setattr(self._audio_player, 'volume', v / 100.0))
+        
+        # 允许通过波形点击跳转播放位置
+        self.waveformPreview.set_seek_callback(self._audio_player.seek)
 
     def _center_window(self):
         screen = QApplication.primaryScreen().geometry()
         self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
+    
+    def _setup_system_tray(self):
+        """配置系统托盘图标"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            logger.debug("System tray not available, skipping")
+            return
+        
+        from .utils.resources import get_app_icon_path
+        icon_path = get_app_icon_path()
+        if not icon_path.exists():
+            logger.warning("App icon not found, cannot create system tray")
+            return
+        
+        self._tray_icon = QSystemTrayIcon(self)
+        self._tray_icon.setIcon(QIcon(str(icon_path)))
+        self._tray_icon.setToolTip("音译家 AI 音效管理工具")
+        
+        # 右键菜单
+        tray_menu = QMenu()
+        show_action = tray_menu.addAction("显示主窗口")
+        show_action.triggered.connect(self._on_tray_show)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("退出")
+        quit_action.triggered.connect(self._on_tray_quit)
+        
+        self._tray_icon.setContextMenu(tray_menu)
+        
+        # 双击托盘图标显示窗口
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        
+        self._tray_icon.show()
+        logger.info("System tray icon created")
+    
+    def _setup_icon_refresh_timer(self):
+        """设置周期性图标刷新定时器，防止 Windows 释放图标句柄"""
+        from .utils.resources import get_app_icon_path
+        
+        self._icon_path = get_app_icon_path()
+        if not self._icon_path.exists():
+            return
+        
+        # 每30秒刷新一次图标
+        self._icon_refresh_timer = QTimer(self)
+        self._icon_refresh_timer.timeout.connect(self._refresh_window_icon)
+        self._icon_refresh_timer.start(30000)  # 30秒
+        logger.debug("Icon refresh timer started (30s interval)")
+    
+    def _refresh_window_icon(self):
+        """刷新窗口图标"""
+        try:
+            if hasattr(self, '_icon_path') and self._icon_path.exists():
+                _icon = QIcon(str(self._icon_path))
+                if not _icon.isNull():
+                    self.setWindowIcon(_icon)
+                    QApplication.instance().setWindowIcon(_icon)
+        except Exception as e:
+            logger.debug(f"Icon refresh failed: {e}")
+    
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        """托盘图标被点击"""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._on_tray_show()
+    
+    def _on_tray_show(self):
+        """从托盘恢复显示主窗口"""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+    
+    def _on_tray_quit(self):
+        """从托盘退出应用"""
+        self._tray_icon.hide()
+        QApplication.instance().quit()
+    
+    def closeEvent(self, event):
+        """关闭窗口时最小化到托盘（若托盘可用），否则正常退出"""
+        tray = getattr(self, '_tray_icon', None)
+        if tray is not None and tray.isVisible():
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
 
 def run_app():
     # 启用高 DPI
@@ -542,12 +730,25 @@ def run_app():
     app.setOrganizationName("音译家团队")
     app.setOrganizationDomain("transcriptionist.app")
     
-    # 设置应用程序图标
+    # 尽早设置应用程序图标（任务栏/Alt+Tab 用；Windows 优先 .ico）
+    # Windows 11 需要更早设置，且需要同时设置 app 和窗口的图标
     from PySide6.QtGui import QIcon
-    from .utils.resources import get_icon_path
-    icon_path = get_icon_path("app_icon.png")
+    from .utils.resources import get_app_icon_path
+    icon_path = get_app_icon_path()
     if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+        try:
+            _icon = QIcon(str(icon_path))
+            # 设置应用程序图标（影响任务栏）
+            app.setWindowIcon(_icon)
+            # Windows 11 可能需要额外设置
+            if sys.platform == 'win32':
+                # 确保图标被正确加载（包含所有尺寸）
+                if not _icon.isNull():
+                    logger.info(f"Application icon loaded from: {icon_path}")
+                else:
+                    logger.warning(f"Icon file exists but failed to load: {icon_path}")
+        except Exception as e:
+            logger.error(f"Failed to set application icon: {e}")
     else:
         logger.warning(f"Application icon not found at {icon_path}")
     

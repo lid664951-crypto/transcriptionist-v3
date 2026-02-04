@@ -138,7 +138,7 @@ class MusicGenInference:
         # Reshape for ONNX model (batch_size=1, sequence_length)
         return np.array([token_ids], dtype=np.int64)
 
-    def generate(self, prompt: str, duration: int = 10, guidance_scale: float = 3.0, callback=None) -> Tuple[int, np.ndarray]:
+    def generate(self, prompt: str, duration: int = 10, guidance_scale: float = 4.0, callback=None) -> Tuple[int, np.ndarray]:
         """
         生成音频 (Real ONNX Implementation)
         
@@ -166,7 +166,7 @@ class MusicGenInference:
             
             # Step 2: Calculate number of tokens to generate
             num_tokens = int(duration * 50)  # ~50 tokens per second
-            num_tokens = min(num_tokens, self.MAX_NEW_TOKENS)
+            num_tokens = max(100, min(num_tokens, self.MAX_NEW_TOKENS))  # 至少生成一小段，避免特别短导致信息不足
             
             # Step 3: Autoregressive generation
             if callback:
@@ -372,8 +372,9 @@ class MusicGenInference:
                 guided_logits = uncond_logits + guidance_scale * (cond_logits - uncond_logits)
                 
                 # 4. Sample from the guided logits
-                temperature = 1.0
-                top_k = 250
+                # 为了提升“听话程度”，使用较低 temperature 和较小 top_k
+                temperature = 0.7
+                top_k = 100
                 
                 # Apply temperature
                 scaled_logits = guided_logits / temperature
