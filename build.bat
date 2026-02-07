@@ -120,12 +120,16 @@ echo [5/6] Build installer (Inno Setup)... >> "%LOG_FILE%"
 
 REM Find Inno Setup Compiler (ISCC.exe)
 set "ISCC="
+REM 2. Try standard locations if not found in PATH
+if not "%ISCC%"=="" goto :found_iscc
 if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
 if exist "C:\Program Files (x86)\Inno Setup 5\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 5\ISCC.exe"
+REM Also check local app data or other common user install paths if needed
 
 if "%BUILD_INSTALLER%"=="1" (
   if not "%ISCC%"=="" (
+    :found_iscc
     echo Building installer with: %ISCC%
     echo Building installer with: %ISCC% >> "%LOG_FILE%"
     "%ISCC%" "installer.iss" >> "%LOG_FILE%" 2>&1

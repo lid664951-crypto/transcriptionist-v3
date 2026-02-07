@@ -42,72 +42,24 @@ class WaveformData:
 
     @classmethod
     def from_audio_file(cls, file_path: Path, num_samples: int = 400) -> Optional["WaveformData"]:
-        """从音频文件提取波形数据（同步版本，仅用于单文件预览）。"""
+        """
+        从音频文件提取波形数据（同步版本，仅用于单文件预览）。
+        
+        为了最大限度避免在第三方解码库（librosa/soundfile 等）的 C 扩展里崩溃，
+        这里采用**极简、安全模式**：
+        - 仅对 PCM WAV 文件尝试提取波形（使用标准库 wave + numpy）
+        - 对其它格式（mp3/flac/ogg 等）直接返回 None，只显示“选择音效以预览波形”
+        """
         if not NUMPY_AVAILABLE:
             return None
 
+        # 仅支持 .wav，其他格式一律跳过，避免不稳定编解码器导致闪退
+        if file_path.suffix.lower() != ".wav":
+            logger.info(f"WaveformPreview: skip non-WAV file for waveform preview: {file_path}")
+            return None
+
         try:
-            # 优先使用 librosa（支持更多格式）
-            try:
-                import librosa  # type: ignore
-
-                y, sr = librosa.load(str(file_path), sr=None, mono=True)
-                duration_ms = int(len(y) / sr * 1000) if sr > 0 else 0
-                if len(y) == 0:
-                    return None
-
-                chunk_size = max(1, len(y) // num_samples)
-                peaks: List[float] = []
-                for i in range(0, len(y), chunk_size):
-                    chunk = y[i : i + chunk_size]
-                    if len(chunk) > 0:
-                        peak = float(np.abs(chunk).max())
-                        peaks.append(peak)
-
-                max_peak = max(peaks) if peaks else 1.0
-                if max_peak > 0:
-                    peaks = [p / max_peak for p in peaks]
-
-                return cls(peaks[:num_samples], duration_ms)
-            except ImportError:
-                logger.info("WaveformPreview: librosa not available, trying soundfile")
-            except Exception as e:
-                logger.warning(f"WaveformPreview: librosa failed: {e}, trying soundfile")
-
-            # 回退到 soundfile
-            try:
-                import soundfile as sf  # type: ignore
-
-                data, sr = sf.read(str(file_path))
-                if sr <= 0:
-                    return None
-
-                if len(data.shape) > 1:
-                    data = data.mean(axis=1)
-
-                duration_ms = int(len(data) / sr * 1000)
-                if len(data) == 0:
-                    return None
-
-                chunk_size = max(1, len(data) // num_samples)
-                peaks = []
-                for i in range(0, len(data), chunk_size):
-                    chunk = data[i : i + chunk_size]
-                    if len(chunk) > 0:
-                        peak = float(np.abs(chunk).max())
-                        peaks.append(peak)
-
-                max_peak = max(peaks) if peaks else 1.0
-                if max_peak > 0:
-                    peaks = [p / max_peak for p in peaks]
-
-                return cls(peaks[:num_samples], duration_ms)
-            except ImportError:
-                logger.info("WaveformPreview: soundfile not available, trying wave module")
-            except Exception as e:
-                logger.warning(f"WaveformPreview: soundfile failed: {e}, trying wave module")
-
-            # 最后回退到 wave，只支持 PCM WAV
+            # 仅使用标准库 wave，避免依赖外部解码器
             import wave
             import struct
 
@@ -130,6 +82,7 @@ class WaveformData:
                     fmt = f"{n_frames * n_channels}h"
                     samples = np.array(struct.unpack(fmt, raw_data), dtype=np.float32)
                 else:
+                    # 其它位深暂不支持，直接放弃波形
                     return None
 
                 if n_channels > 1:
@@ -139,7 +92,7 @@ class WaveformData:
                     return None
 
                 chunk_size = max(1, len(samples) // num_samples)
-                peaks = []
+                peaks: List[float] = []
                 for i in range(0, len(samples), chunk_size):
                     chunk = samples[i : i + chunk_size]
                     if len(chunk) > 0:
@@ -161,23 +114,38 @@ class _WaveformLoadWorker(QObject):
     
     finished = Signal(object)  # WaveformData or None
     
-    def __init__(self, file_path: str, parent=None):
+    def __init__(self, file_path: str, request_id: int, parent=None):
         super().__init__(parent)
         self.file_path = file_path
+        self.request_id = int(request_id)
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+    
+    @property
+    def is_cancelled(self) -> bool:
+        return bool(self._cancelled)
     
     def run(self):
         """在后台线程中加载波形."""
         try:
+            if self.is_cancelled:
+                return
             path = Path(self.file_path)
             if not path.exists():
-                self.finished.emit(None)
+                if not self.is_cancelled:
+                    self.finished.emit({"request_id": self.request_id, "data": None})
                 return
             
             data = WaveformData.from_audio_file(path)
-            self.finished.emit(data)
+            if self.is_cancelled:
+                return
+            self.finished.emit({"request_id": self.request_id, "data": data})
         except Exception as e:
             logger.error(f"WaveformLoadWorker: failed to load {self.file_path}: {e}")
-            self.finished.emit(None)
+            if not self.is_cancelled:
+                self.finished.emit({"request_id": self.request_id, "data": None})
 
 
 class WaveformPreviewWidget(QWidget):
@@ -199,6 +167,7 @@ class WaveformPreviewWidget(QWidget):
         self._load_thread: Optional[QThread] = None
         self._load_worker: Optional[_WaveformLoadWorker] = None
         self._pending_file: Optional[str] = None  # 用于取消旧的加载请求
+        self._request_id: int = 0  # 每次 load_file 自增，用于 Latest-wins 竞态保护
 
         self.setMinimumHeight(72)
         self.setMaximumHeight(96)
@@ -233,19 +202,27 @@ class WaveformPreviewWidget(QWidget):
         self._duration_ms = 0
         self._position_ms = 0
         self._pending_file = file_path
+        self._request_id += 1
+        current_request_id = int(self._request_id)
         self.update()
         
         # 启动后台线程加载
         self._load_thread = QThread()
-        self._load_worker = _WaveformLoadWorker(file_path)
+        self._load_worker = _WaveformLoadWorker(file_path, request_id=current_request_id)
         self._load_worker.moveToThread(self._load_thread)
         
-        # 保存当前文件路径，用于验证回调时是否仍然有效
-        current_file = file_path
-        
-        def on_finished(data):
-            # 验证文件路径是否仍然匹配（避免旧文件的回调覆盖新文件）
-            if self._pending_file == current_file:
+        def on_finished(payload):
+            """
+            payload: {"request_id": int, "data": WaveformData|None}
+            Latest-wins: 只接受当前 request_id 的结果
+            """
+            try:
+                rid = int(payload.get("request_id")) if isinstance(payload, dict) else -1
+                data = payload.get("data") if isinstance(payload, dict) else None
+            except Exception:
+                rid = -1
+                data = None
+            if rid == self._request_id:
                 self._on_load_finished(data)
         
         self._load_thread.started.connect(self._load_worker.run)
@@ -274,24 +251,19 @@ class WaveformPreviewWidget(QWidget):
     
     def _cancel_loading(self) -> None:
         """取消正在进行的加载任务."""
-        if self._load_thread is not None and self._load_thread.isRunning():
-            # 断开信号连接，避免回调执行
+        # Latest-wins：取消旧任务，但不强杀线程（避免 terminate 导致崩溃）
+        if self._load_worker is not None:
             try:
-                if self._load_worker is not None:
-                    self._load_worker.finished.disconnect()
+                self._load_worker.cancel()
             except Exception:
                 pass
-            # 请求线程退出
-            self._load_thread.quit()
-            # 等待线程结束，但设置更长的超时（librosa/soundfile 可能需要时间）
-            if not self._load_thread.wait(2000):  # 增加到 2 秒
-                # 如果线程还在运行，强制终止（避免资源泄漏）
-                logger.warning("WaveformLoadWorker thread did not exit in time, terminating")
-                try:
-                    self._load_thread.terminate()
-                    self._load_thread.wait(500)
-                except Exception as e:
-                    logger.error(f"Failed to terminate waveform load thread: {e}")
+        if self._load_thread is not None and self._load_thread.isRunning():
+            try:
+                self._load_thread.quit()
+                # 不阻塞太久：如果 200ms 内能退出就退出；否则让它后台自然结束（结果会被 request_id 丢弃）
+                self._load_thread.wait(200)
+            except Exception:
+                pass
         self._cleanup_load_thread()
     
     def _cleanup_load_thread(self) -> None:
@@ -299,10 +271,24 @@ class WaveformPreviewWidget(QWidget):
         if self._load_thread is not None:
             try:
                 if self._load_thread.isRunning():
-                    self._load_thread.quit()
-                    if not self._load_thread.wait(200):  # 短暂等待
-                        self._load_thread.terminate()
-                        self._load_thread.wait(200)
+                    # 线程仍在跑：不删除对象，改为挂到 finished 后再 deleteLater
+                    try:
+                        self._load_thread.quit()
+                    except Exception:
+                        pass
+                    thread = self._load_thread
+                    worker = self._load_worker
+                    try:
+                        # finished 后再清理，避免删除 running QThread 导致崩溃
+                        thread.finished.connect(thread.deleteLater)
+                        if worker is not None:
+                            thread.finished.connect(worker.deleteLater)
+                    except Exception:
+                        pass
+                    # 立刻断开引用，让新请求可以继续；旧线程完成后会自行释放
+                    self._load_thread = None
+                    self._load_worker = None
+                    return
             except (RuntimeError, Exception) as e:
                 logger.debug(f"Error cleaning up waveform load thread: {e}")
             finally:

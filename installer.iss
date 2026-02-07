@@ -1,13 +1,13 @@
-; 音译家 AI音效管理工具1.1.0 - Inno Setup 安装脚本
+; 音译家 AI音效管理工具1.1.1 - Inno Setup 安装脚本
 ; 使用前请先运行 build.bat 完成 PyInstaller 打包，再运行本脚本或由 build.bat 自动调用
 ; 安装包使用项目图标 ui/resources/icons/app_icon.ico
 
-#define MyAppName "音译家 AI音效管理工具1.1.0"
-#define MyAppVersion "1.1.0"
+#define MyAppName "音译家 AI音效管理工具1.1.1"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "音译家"
 #define MyAppURL "https://github.com/quodlibet/transcriptionist"
-#define MyAppExeName "音译家 AI音效管理工具1.1.0.exe"
-#define PyInstallerOutput "dist\音译家 AI音效管理工具1.1.0"
+#define MyAppExeName "音译家 AI音效管理工具1.1.1.exe"
+#define PyInstallerOutput "dist\音译家 AI音效管理工具1.1.1"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -21,9 +21,9 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-; 安装包输出路径与文件名（与绿色版主程序同名，带版本：音译家 AI音效管理工具1.1.0）
+; 安装包输出路径与文件名（与绿色版主程序同名，带版本：音译家 AI音效管理工具1.1.1）
 OutputDir=dist
-OutputBaseFilename=音译家 AI音效管理工具1.1.0
+OutputBaseFilename=音译家 AI音效管理工具1.1.1
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

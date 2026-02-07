@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_FORMATS = {".wav", ".flac", ".mp3", ".ogg", ".aiff", ".aif", ".m4a", ".mp4"}
 
+# SQLite 单条 SQL 中变量数上限约 999
+# IN 查询/更新：每批 500 个占位符安全
+SQLITE_IN_BATCH = 500
+# INSERT 多行：每行 3 列 → 每批最多 999/3≈333 行，取 300 保险（4–5 万条也安全）
+SQLITE_INSERT_BATCH = 300
+
 # 导入队列状态
 IMPORT_STATUS_PENDING = 0
 IMPORT_STATUS_PROCESSING = 1
@@ -193,37 +199,42 @@ class QueueScanWorker(QObject):
         return out
 
     def _enqueue_paths(self, root_folder: Path, paths: list[str]) -> tuple[int, int]:
-        """将路径批量写入导入队列，返回 (enqueued, skipped)。"""
+        """将路径批量写入导入队列，返回 (enqueued, skipped)。避免 SQLite too many SQL variables。"""
         if not paths:
             return 0, 0
         from sqlalchemy import insert
         from transcriptionist_v3.infrastructure.database.connection import session_scope
         from transcriptionist_v3.infrastructure.database.models import ImportQueue, AudioFile
 
+        existing_audio: set[str] = set()
+        existing_queue: set[str] = set()
         with session_scope() as session:
-            existing_audio = {
-                row.file_path for row in session.query(AudioFile.file_path).filter(AudioFile.file_path.in_(paths)).all()
-            }
-            existing_queue = {
-                row.file_path for row in session.query(ImportQueue.file_path).filter(ImportQueue.file_path.in_(paths)).all()
-            }
+            for i in range(0, len(paths), SQLITE_IN_BATCH):
+                batch = paths[i : i + SQLITE_IN_BATCH]
+                existing_audio.update(
+                    row.file_path for row in session.query(AudioFile.file_path).filter(AudioFile.file_path.in_(batch)).all()
+                )
+                existing_queue.update(
+                    row.file_path for row in session.query(ImportQueue.file_path).filter(ImportQueue.file_path.in_(batch)).all()
+                )
             to_insert = [p for p in paths if p not in existing_audio and p not in existing_queue]
             skipped = len(paths) - len(to_insert)
 
             if to_insert:
-                values = [
-                    {
-                        "file_path": p,
-                        "root_path": str(root_folder),
-                        "status": IMPORT_STATUS_PENDING,
-                    }
-                    for p in to_insert
-                ]
-                stmt = insert(ImportQueue).prefix_with("OR IGNORE")
-                session.execute(stmt, values)
-                session.commit()
-
-            return len(to_insert), skipped
+                for i in range(0, len(to_insert), SQLITE_INSERT_BATCH):
+                    chunk = to_insert[i : i + SQLITE_INSERT_BATCH]
+                    values = [
+                        {
+                            "file_path": p,
+                            "root_path": str(root_folder),
+                            "status": IMPORT_STATUS_PENDING,
+                        }
+                        for p in chunk
+                    ]
+                    stmt = insert(ImportQueue).prefix_with("OR IGNORE")
+                    session.execute(stmt, values)
+            # session_scope 退出时自动 commit
+        return len(to_insert), skipped
 
     def run(self):
         """扫描目录：发现文件即入队。"""
@@ -448,15 +459,20 @@ class ImportQueueWorker(QObject):
                     ids = [r.id for r in rows]
                     paths = [r.file_path for r in rows]
                     
-                    # 合并查询：同时检查已存在的文件和更新状态
-                    existing = {
-                        row.file_path for row in session.query(AudioFile.file_path).filter(AudioFile.file_path.in_(paths)).all()
-                    }
+                    # 合并查询：已存在的文件路径（分批，避免 too many SQL variables）
+                    existing: set[str] = set()
+                    for i in range(0, len(paths), SQLITE_IN_BATCH):
+                        batch = paths[i : i + SQLITE_IN_BATCH]
+                        existing.update(
+                            row.file_path for row in session.query(AudioFile.file_path).filter(AudioFile.file_path.in_(batch)).all()
+                        )
                     
-                    # 更新状态为 PROCESSING
-                    session.query(ImportQueue).filter(ImportQueue.id.in_(ids)).update(
-                        {"status": IMPORT_STATUS_PROCESSING}, synchronize_session=False
-                    )
+                    # 更新状态为 PROCESSING（分批）
+                    for i in range(0, len(ids), SQLITE_IN_BATCH):
+                        id_batch = ids[i : i + SQLITE_IN_BATCH]
+                        session.query(ImportQueue).filter(ImportQueue.id.in_(id_batch)).update(
+                            {"status": IMPORT_STATUS_PROCESSING}, synchronize_session=False
+                        )
                     session.commit()
 
                 pending_rows = [(r, p) for r, p in zip(rows, paths) if p not in existing]
@@ -518,19 +534,21 @@ class ImportQueueWorker(QObject):
                     if new_files:
                         session.bulk_save_objects(new_files)
                         saved_total += len(new_files)
-                    if skipped_ids:
-                        session.query(ImportQueue).filter(ImportQueue.id.in_(skipped_ids)).update(
+                    for i in range(0, len(skipped_ids), SQLITE_IN_BATCH):
+                        session.query(ImportQueue).filter(ImportQueue.id.in_(skipped_ids[i : i + SQLITE_IN_BATCH])).update(
                             {"status": IMPORT_STATUS_SKIPPED}, synchronize_session=False
                         )
+                    if skipped_ids:
                         skipped_total += len(skipped_ids)
-                    if done_ids:
-                        session.query(ImportQueue).filter(ImportQueue.id.in_(done_ids)).update(
+                    for i in range(0, len(done_ids), SQLITE_IN_BATCH):
+                        session.query(ImportQueue).filter(ImportQueue.id.in_(done_ids[i : i + SQLITE_IN_BATCH])).update(
                             {"status": IMPORT_STATUS_DONE}, synchronize_session=False
                         )
-                    if failed_ids:
-                        session.query(ImportQueue).filter(ImportQueue.id.in_(failed_ids)).update(
+                    for i in range(0, len(failed_ids), SQLITE_IN_BATCH):
+                        session.query(ImportQueue).filter(ImportQueue.id.in_(failed_ids[i : i + SQLITE_IN_BATCH])).update(
                             {"status": IMPORT_STATUS_FAILED, "error": "metadata extract failed"}, synchronize_session=False
                         )
+                    if failed_ids:
                         skipped_total += len(failed_ids)
                     session.commit()
 
@@ -3551,52 +3569,213 @@ class LibraryPage(QWidget):
         return self._file_metadata.get(file_path)
 
     def _on_clear_library(self):
-        """清空音效库"""
+        """
+        清空按钮（按选择范围执行）：
+        - 若用户点击了“全选”：清空整个库（树/列表/右侧面板全部清空）
+        - 若未全选但勾选了某个音效文件夹：仅清空这些文件夹下的音效数据（不删硬盘文件）
+        - 若既未全选也未选择任何文件夹：不执行，并提示用户先选择
+        """
+        # 1) 范围判定
+        is_all = bool(getattr(self, "_is_all_selected", False))
+        selected_folders = sorted(getattr(self, "_selected_folders", set()) or [])
+
+        if (not is_all) and (not selected_folders):
+            NotificationHelper.warning(self, "提示", "请先选择要清空的音效文件夹，或勾选“全选”以清空整个库。")
+            return
+
+        # 2) 确认弹窗（根据范围显示不同文案）
         from qfluentwidgets import MessageDialog
-        dialog = MessageDialog(
-            "清空音效库",
-            "确定要清空所有音效库数据吗？\n此操作将删除数据库中的所有记录，但不会删除硬盘上的文件。",
-            self
-        )
-        dialog.yesButton.setText("确定清空")
+        if is_all:
+            title = "清空音效库"
+            content = "确定要清空所有音效库数据吗？\n此操作将删除数据库中的所有记录，但不会删除硬盘上的文件。"
+            yes_text = "确定清空"
+        else:
+            title = "清空选中文件夹"
+            if len(selected_folders) == 1:
+                content = f"确定要清空该文件夹下的音效数据吗？\n{selected_folders[0]}\n\n此操作不会删除硬盘上的文件。"
+            else:
+                content = f"确定要清空所选 {len(selected_folders)} 个文件夹下的音效数据吗？\n此操作不会删除硬盘上的文件。"
+            yes_text = "确定清空所选"
+
+        dialog = MessageDialog(title, content, self)
+        dialog.yesButton.setText(yes_text)
         dialog.cancelButton.setText("取消")
-        
-        if dialog.exec():
-            try:
-                from transcriptionist_v3.infrastructure.database.models import AudioFile, LibraryPath, ImportQueue
+        if not dialog.exec():
+            return
+
+        # 3) 执行清理（数据库 + 内存 + UI）
+        try:
+            from pathlib import Path as _Path
+            import os
+            from sqlalchemy import or_
+            from transcriptionist_v3.infrastructure.database.models import AudioFile, LibraryPath, ImportQueue
+
+            def _norm(p: str) -> str:
+                try:
+                    return os.path.normcase(os.path.normpath(str(p)))
+                except Exception:
+                    return str(p)
+
+            if is_all:
+                # --- A. 全库清空 ---
                 with session_scope() as session:
-                    # Truncate tables
                     session.query(AudioFile).delete()
                     session.query(LibraryPath).delete()
                     # 关键：同时清空导入队列，否则会出现“扫描全跳过但库为空”的假导入状态
                     session.query(ImportQueue).delete()
                     session.commit()
-                
-                # Clear memory
+
+                # 内存结构彻底清空
                 self._audio_files = []
                 self._library_roots = []
                 self._file_metadata = {}
                 self._folder_structure.clear()
                 self._selected_files.clear()
                 self._selected_folders.clear()
-                
-                # Clear UI
+                self._all_file_data = []
+                self._file_items.clear()
+                self._folder_items = {}
+                self._folder_file_index = {}
+                self._folder_index_built = False
+                self._file_path_to_id = {}
+                try:
+                    self._file_info_cache.clear()
+                except Exception:
+                    self._file_info_cache = {}
+                setattr(self, "_last_folder_display_key", None)
+                setattr(self, "_last_selection_state_key", None)
+
+                # UI 清空
                 self.tree.clear()
                 self.stats_label.setText("")
-                self.selected_label.setText("已选 0")
+                self.selected_label.setText("已选择 0 个文件")
                 self.info_card.clear_info()
                 self.stack.setCurrentWidget(self.empty_state)
-                
+
+                # 重置全选按钮状态（避免 UI 显示仍为全选）
+                self.select_all_cb.blockSignals(True)
+                self.select_all_cb.setChecked(False)
+                self.select_all_cb.blockSignals(False)
+                self._is_all_selected = False
+
+                # 清空右侧音效列表面板
+                self.folder_clicked.emit("", [])
+
                 # Emit signals
-                self.files_checked.emit([]) # Clear selection in other pages
-                self.library_cleared.emit() # Notify global clear
-                
+                self.files_checked.emit([])  # Clear selection in other pages
+                self.library_cleared.emit()  # Notify global clear
+
                 NotificationHelper.success(self, "已清空", "音效库已重置")
-                logger.info("Library cleared by user")
-                
-            except Exception as e:
-                logger.error(f"Failed to clear library: {e}")
-                NotificationHelper.error(self, "错误", f"清空失败: {e}")
+                logger.info("Library cleared by user (all)")
+                return
+
+            # --- B. 仅清空选中文件夹 ---
+            # 4) 数据库：删除选中文件夹（含子目录）下的音效记录 + 导入队列
+            folder_norms = [_norm(p) for p in selected_folders]
+
+            def _prefix_variants(folder_path: str) -> list[str]:
+                # 支持 both slash
+                p = str(folder_path).rstrip("\\/") + os.sep
+                p_alt = p.replace("\\", "/") if "\\" in p else p.replace("/", "\\")
+                return [p, p_alt]
+
+            like_clauses = []
+            queue_like_clauses = []
+            for folder_path in selected_folders:
+                for prefix in _prefix_variants(folder_path):
+                    like_clauses.append(AudioFile.file_path.like(prefix + "%"))
+                    queue_like_clauses.append(ImportQueue.file_path.like(prefix + "%"))
+
+            with session_scope() as session:
+                if like_clauses:
+                    session.query(AudioFile).filter(or_(*like_clauses)).delete(synchronize_session=False)
+                if queue_like_clauses:
+                    session.query(ImportQueue).filter(or_(*queue_like_clauses)).delete(synchronize_session=False)
+
+                # 如果清空的是库根路径，同时从 LibraryPath 移除（否则下次刷新/扫描会再出现）
+                roots = [str(r) for r in (getattr(self, "_library_roots", []) or [])]
+                roots_norm = {_norm(r): r for r in roots}
+                to_remove_roots = []
+                for folder_path in selected_folders:
+                    key = _norm(folder_path)
+                    if key in roots_norm:
+                        to_remove_roots.append(roots_norm[key])
+                if to_remove_roots:
+                    # 双斜杠兼容
+                    rp = set(to_remove_roots)
+                    rp |= {p.replace("\\", "/") for p in list(rp)}
+                    rp |= {p.replace("/", "\\") for p in list(rp)}
+                    session.query(LibraryPath).filter(LibraryPath.path.in_(list(rp))).delete(synchronize_session=False)
+                session.commit()
+
+            # 5) 内存：从 _all_file_data 中移除这些文件夹下的条目，并更新 roots
+            def _is_under_any_selected(file_path_str: str) -> bool:
+                fp = _norm(file_path_str)
+                for folder_norm, folder_raw in zip(folder_norms, selected_folders):
+                    # 以 folder 为前缀（含子目录）
+                    base = folder_norm.rstrip("\\/") + os.sep
+                    if fp == folder_norm or fp.startswith(base):
+                        return True
+                return False
+
+            new_all = []
+            for file_path, metadata in (getattr(self, "_all_file_data", []) or []):
+                if not _is_under_any_selected(str(file_path)):
+                    new_all.append((file_path, metadata))
+            self._all_file_data = new_all
+
+            # roots 更新（被移除的根从列表中删除）
+            if getattr(self, "_library_roots", None):
+                keep_roots = []
+                for r in self._library_roots:
+                    if _norm(str(r)) not in set(folder_norms):
+                        keep_roots.append(r)
+                self._library_roots = keep_roots
+
+            # 清理索引/缓存并重建树（懒加载结构）
+            self._file_items.clear()
+            self._folder_items = {}
+            self._folder_file_index = {}
+            self._folder_index_built = False
+            self._file_path_to_id = {}
+            try:
+                self._file_info_cache.clear()
+            except Exception:
+                self._file_info_cache = {}
+            setattr(self, "_last_folder_display_key", None)
+            setattr(self, "_last_selection_state_key", None)
+
+            # 清理选择状态（清空后不保留旧勾选）
+            self._selected_files.clear()
+            self._selected_folders.clear()
+            self._is_all_selected = False
+            self.select_all_cb.blockSignals(True)
+            self.select_all_cb.setChecked(False)
+            self.select_all_cb.blockSignals(False)
+
+            # UI：重建文件夹树结构/统计，并清空右侧面板
+            self.folder_clicked.emit("", [])
+            if not self._all_file_data:
+                self.tree.clear()
+                self.stats_label.setText("")
+                self.selected_label.setText("已选择 0 个文件")
+                self.info_card.clear_info()
+                self.stack.setCurrentWidget(self.empty_state)
+            else:
+                # 只更新树结构（不加载文件）
+                self._update_tree_lazy()
+                self.info_card.clear_info()
+
+            # Emit（局部清空不触发全局 library_cleared，避免其它页面误认为全库清空）
+            self.files_checked.emit([])  # 清掉旧的“文件勾选”通道
+            self.selection_changed.emit({"mode": "none", "count": 0})
+
+            NotificationHelper.success(self, "已清空", "已清空所选文件夹下的音效数据")
+            logger.info(f"Library cleared by user (folders={len(selected_folders)})")
+
+        except Exception as e:
+            logger.error(f"Failed to clear library: {e}", exc_info=True)
+            NotificationHelper.error(self, "错误", f"清空失败: {e}")
 
     # ==================== 懒加载相关方法 ====================
     

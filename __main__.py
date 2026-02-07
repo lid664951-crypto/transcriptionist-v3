@@ -33,7 +33,7 @@ def main() -> int:
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                'com.transcriptionist.ai-sound-manager.1.1.0'
+                'com.transcriptionist.ai-sound-manager.1.1.1'
             )
         except Exception:
             pass  # 非关键，失败不影响运行

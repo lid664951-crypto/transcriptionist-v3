@@ -55,7 +55,7 @@ class TranscriptionistWindow(FramelessWindow):
         super().__init__()
         
         # 1. 窗口基础设置
-        self.setWindowTitle("音译家 AI 音效管理工具 v1.1.0")
+        self.setWindowTitle("音译家 AI 音效管理工具 v1.1.1")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 750)
         
@@ -147,7 +147,7 @@ class TranscriptionistWindow(FramelessWindow):
         
         # 添加标题文本标签
         from PySide6.QtWidgets import QLabel
-        self.titleLabel = QLabel("音译家 AI 音效管理工具 v1.1.0", self)
+        self.titleLabel = QLabel("音译家 AI 音效管理工具 v1.1.1", self)
         self.titleLabel.setStyleSheet("""
             QLabel {
                 color: rgb(200, 200, 200);

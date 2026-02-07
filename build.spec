@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-音译家 v1.1.0 - PyInstaller 打包配置文件
+音译家 v1.1.1 - PyInstaller 打包配置文件
 
 使用方法:
     pyinstaller build.spec
 
 输出目录:
-    dist/音译家 AI音效管理工具1.1.0/
+    dist/音译家 AI音效管理工具1.1.1/
 
 本次打包要点:
 - CLAP 音频预处理：preprocess_audio.onnx + preprocess_audio.onnx.data（两个文件）随包分发到 data/models/onnx_preprocess/（冻结时从 _MEIPASS 解析），DirectML GPU 加速，无则回退 NumPy
@@ -342,7 +342,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='音译家 AI音效管理工具1.1.0',
+    name='音译家 AI音效管理工具1.1.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -413,14 +413,14 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='音译家 AI音效管理工具1.1.0',  # 绿色版输出文件夹及主程序名
+    name='音译家 AI音效管理工具1.1.1',  # 绿色版输出文件夹及主程序名
 )
 
 print("=" * 60)
 print("打包配置完成！")
 print("=" * 60)
-print(f"输出目录: {project_root / 'dist' / '音译家 AI音效管理工具1.1.0'}")
+print(f"输出目录: {project_root / 'dist' / '音译家 AI音效管理工具1.1.1'}")
 print("包含的可执行文件:")
-print("  - 音译家 AI音效管理工具1.1.0.exe (主程序)")
+print("  - 音译家 AI音效管理工具1.1.1.exe (主程序)")
 print("  - metadata_worker.exe (元数据提取后台进程)")
 print("=" * 60)

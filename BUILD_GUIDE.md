@@ -1,4 +1,4 @@
-# 音译家 v1.1.0 - 打包构建指南
+# 音译家 v1.1.1 - 打包构建指南
 
 ## 📋 目录
 1. [打包前检查](#打包前检查)
@@ -65,10 +65,10 @@ transcriptionist_v3/
 
 | 项 | 值 |
 |----|-----|
-| 主程序 exe 名 | `音译家 AI音效管理工具1.1.0.exe` |
-| 绿色版输出目录 | `dist/音译家 AI音效管理工具1.1.0/` |
+| 主程序 exe 名 | `音译家 AI音效管理工具1.1.1.exe` |
+| 绿色版输出目录 | `dist/音译家 AI音效管理工具1.1.1/` |
 | 后台进程 | `metadata_worker.exe`（同目录） |
-| 安装包输出（BUILD_INSTALLER=1） | `dist/音译家 AI音效管理工具1.1.0.exe` |
+| 安装包输出（BUILD_INSTALLER=1） | `dist/音译家 AI音效管理工具1.1.1.exe` |
 | CLAP 模型目录 | `data/models/larger-clap-general`（preprocess_audio.onnx 随包；audio/text_model 软件内下载） |
 | 翻译/打标 | 走「设置 -> AI 服务商配置」与「AI 批量翻译性能」；translation_manager、openai_compatible、ai_jobs 等已打入包内 |
 
@@ -121,8 +121,8 @@ pyinstaller --name="音译家" --windowed --icon=ui/resources/icons/app_icon.ico
 
 ```bash
 # 打包后的文件在 dist/ 目录（目录名与 build.spec 中 COLLECT name 一致）
-cd dist/音译家 AI音效管理工具1.1.0
-音译家 AI音效管理工具1.1.0.exe
+cd dist/音译家 AI音效管理工具1.1.1
+音译家 AI音效管理工具1.1.1.exe
 ```
 
 ---
@@ -474,19 +474,19 @@ datas += [
 ```ini
 [Setup]
 AppName=音译家 AI音效管理工具
-AppVersion=1.1.0
+AppVersion=1.1.1
 AppPublisher=音译家开发者
 AppPublisherURL=https://github.com/your-repo
 DefaultDirName={autopf}\Transcriptionist
 DefaultGroupName=音译家
 OutputDir=output
-OutputBaseFilename=音译家_v1.1.0_Setup
+OutputBaseFilename=音译家_v1.1.1_Setup
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 LicenseFile=LICENSE
 SetupIconFile=ui\resources\icons\app_icon.ico
-UninstallDisplayIcon={app}\音译家 AI音效管理工具1.1.0.exe
+UninstallDisplayIcon={app}\音译家 AI音效管理工具1.1.1.exe
 PrivilegesRequired=admin
 
 [Languages]
@@ -497,16 +497,16 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "quicklaunchicon"; Description: "创建快速启动栏快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
-Source: "dist\音译家 AI音效管理工具1.1.0\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\音译家 AI音效管理工具1.1.1\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\音译家 AI音效管理工具1.1.0"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"
+Name: "{group}\音译家 AI音效管理工具1.1.1"; Filename: "{app}\音译家 AI音效管理工具1.1.1.exe"
 Name: "{group}\卸载音译家"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\音译家 AI音效管理工具1.1.0"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Tasks: desktopicon
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\音译家"; Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Tasks: quicklaunchicon
+Name: "{autodesktop}\音译家 AI音效管理工具1.1.1"; Filename: "{app}\音译家 AI音效管理工具1.1.1.exe"; Tasks: desktopicon
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\音译家"; Filename: "{app}\音译家 AI音效管理工具1.1.1.exe"; Tasks: quicklaunchicon
 
 [Run]
-Filename: "{app}\音译家 AI音效管理工具1.1.0.exe"; Description: "启动音译家"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\音译家 AI音效管理工具1.1.1.exe"; Description: "启动音译家"; Flags: nowait postinstall skipifsilent
 ```
 
 ---
@@ -537,8 +537,8 @@ pyinstaller build.spec
 
 ```bash
 # 运行打包后的程序（目录与主程序名以 build.spec 为准）
-cd dist\音译家 AI音效管理工具1.1.0
-音译家 AI音效管理工具1.1.0.exe
+cd dist\音译家 AI音效管理工具1.1.1
+音译家 AI音效管理工具1.1.1.exe
 ```
 
 ### 4. 创建安装包
@@ -552,8 +552,8 @@ iscc installer.iss
 
 ```
 dist/
-├── 音译家 AI音效管理工具1.1.0/   （绿色版目录，含主程序与 metadata_worker.exe）
-└── 音译家 AI音效管理工具1.1.0.exe  （安装包，约 200–300MB，需 BUILD_INSTALLER=1 时生成）
+├── 音译家 AI音效管理工具1.1.1/   （绿色版目录，含主程序与 metadata_worker.exe）
+└── 音译家 AI音效管理工具1.1.1.exe  （安装包，约 200–300MB，需 BUILD_INSTALLER=1 时生成）
 ```
 
 ---

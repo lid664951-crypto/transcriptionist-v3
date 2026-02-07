@@ -15,6 +15,9 @@ from PySide6.QtCore import QThread, QObject, Signal
 
 logger = logging.getLogger(__name__)
 
+# SQLite 单条 SQL 变量数上限约 999，IN 查询需分批
+SQLITE_IN_BATCH = 500
+
 
 class BaseWorker(QObject):
     """
@@ -1634,21 +1637,26 @@ class TaggingJobWorker(BaseWorker):
                 if not filtered:
                     return
 
-                # 查询 DB 获取 id 与状态（索引与 DB 可能一种用 / 一种用 \，两种形式都查）
+                # 查询 DB 获取 id 与状态（索引与 DB 可能一种用 / 一种用 \，两种形式都查；分批避免 too many SQL variables）
                 raw_paths = list(filtered.keys())
                 normalized_map = {normalize_path(p): p for p in raw_paths}
                 query_paths = set(raw_paths)
                 for p in raw_paths:
                     query_paths.add(p.replace("\\", "/"))
                     query_paths.add(p.replace("/", "\\"))
+                query_path_list = list(query_paths)
 
                 with session_scope() as session:
-                    rows = (
-                        session.query(AudioFile.id, AudioFile.file_path, AudioFile.tag_status, AudioFile.tag_version)
-                        .filter(AudioFile.file_path.in_(list(query_paths)))
-                        .all()
-                    )
-                    id_map = {normalize_path(row.file_path): row for row in rows}
+                    id_map = {}
+                    for i in range(0, len(query_path_list), SQLITE_IN_BATCH):
+                        batch = query_path_list[i : i + SQLITE_IN_BATCH]
+                        rows = (
+                            session.query(AudioFile.id, AudioFile.file_path, AudioFile.tag_status, AudioFile.tag_version)
+                            .filter(AudioFile.file_path.in_(batch))
+                            .all()
+                        )
+                        for row in rows:
+                            id_map[normalize_path(row.file_path)] = row
 
                     # 第一遍：收集本 chunk 内所有 (row, top_tags)，以及需要翻译的标签集合（走「设置 -> AI 批量翻译性能」的批次与并发）
                     pending: list = []

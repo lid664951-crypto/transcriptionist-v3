@@ -815,7 +815,7 @@ class SettingsPage(QWidget):
         about_title = SubtitleLabel("关于")
         about_layout.addWidget(about_title)
         
-        version_label = BodyLabel("音译家 AI 音效管理工具 v1.1.0")
+        version_label = BodyLabel("音译家 AI 音效管理工具 v1.1.1")
         version_label.setStyleSheet("background: transparent; font-weight: 500;")
         about_layout.addWidget(version_label)
         

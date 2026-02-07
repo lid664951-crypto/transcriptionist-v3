@@ -197,8 +197,16 @@ class RuntimeConfig:
         gtk4_share = gtk4_home / "share"
         gtk4_site_packages = gtk4_lib / "site-packages"
         
-        # Application data paths - always within app directory for portability
+        # Application data paths: 便携式安装用 app 目录；Windows 安装到 Program Files 时改为用户目录，避免只读导致 "attempt to write a readonly database"
         data_dir = app_root / "data"
+        config_dir = app_root / "config"
+        if is_frozen and sys.platform == "win32":
+            app_root_str = str(app_root).lower()
+            if "program files" in app_root_str or "program files (x86)" in app_root_str:
+                appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+                user_data = appdata / "Transcriptionist"
+                data_dir = user_data / "data"
+                config_dir = user_data / "config"
         
         # Resource paths - handle PyInstaller _internal directory
         if internal_dir and internal_dir.exists():
@@ -225,7 +233,7 @@ class RuntimeConfig:
             gtk4_share=gtk4_share,
             gtk4_site_packages=gtk4_site_packages,
             data_dir=data_dir,
-            config_dir=app_root / "config",
+            config_dir=config_dir,
             cache_dir=data_dir / "cache",
             logs_dir=data_dir / "logs",
             database_dir=data_dir / "database",
