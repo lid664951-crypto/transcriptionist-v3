@@ -16,8 +16,12 @@ logger = logging.getLogger(__name__)
 def _get_fonts_dir() -> Path:
     """获取字体目录路径，支持 PyInstaller 打包"""
     if getattr(sys, 'frozen', False):
-        # 打包后：使用 PyInstaller 的临时目录
-        return Path(sys._MEIPASS) / "resources" / "fonts"
+        # 打包后：兼容 PyInstaller 与 Nuitka
+        if hasattr(sys, '_MEIPASS'):
+            return Path(sys._MEIPASS) / "resources" / "fonts"
+        exe_dir = Path(sys.executable).resolve().parent
+        candidate = exe_dir / "resources" / "fonts"
+        return candidate if candidate.exists() else (Path(__file__).parent.parent / "resources" / "fonts")
     else:
         # 开发环境：使用当前文件的父目录
         return Path(__file__).parent.parent / "resources" / "fonts"

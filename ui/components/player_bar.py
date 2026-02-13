@@ -92,6 +92,7 @@ class PlayerBar(CardWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("playerBarRoot")
         self.setFixedHeight(72)
         self._is_playing = False
         self._duration = 0
@@ -110,15 +111,15 @@ class PlayerBar(CardWidget):
     def _init_ui(self):
         """初始化UI"""
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(32, 12, 32, 12) # Modern UI: Increased margins
-        layout.setSpacing(24)
+        layout.setContentsMargins(24, 10, 24, 10)
+        layout.setSpacing(18)
         
         # 左侧：当前播放信息
         info_layout = QVBoxLayout()
-        info_layout.setSpacing(4) # Modern UI: Increased spacing
+        info_layout.setSpacing(2)
         
         self.title_label = BodyLabel("未播放")
-        self.title_label.setStyleSheet("background: transparent;")
+        self.title_label.setObjectName("playerBarTitle")
         # Removing hardcoded font family, keeping size/weight relative to app font
         font = self.title_label.font()
         font.setPixelSize(14) # Slightly larger for title
@@ -127,55 +128,57 @@ class PlayerBar(CardWidget):
         info_layout.addWidget(self.title_label)
         
         self.subtitle_label = ScrollingLabel("选择音效文件开始播放")
-        self.subtitle_label.setStyleSheet("background: transparent;")
+        self.subtitle_label.setObjectName("playerBarSubtitle")
         info_layout.addWidget(self.subtitle_label)
         
         info_widget = QWidget()
-        info_widget.setStyleSheet("background: transparent;")
+        info_widget.setObjectName("playerBarInfo")
         info_widget.setLayout(info_layout)
         info_widget.setFixedWidth(250)  # 增加宽度以显示更多路径
+        info_widget.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(info_widget)
         
         # 中间：播放控制
         controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(12)  # 增加按钮间距
+        controls_layout.setSpacing(8)
         controls_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # 上一曲
         self.prev_btn = TransparentToolButton(FluentIcon.CARE_LEFT_SOLID)
-        self.prev_btn.setFixedSize(36, 36)
-        self.prev_btn.clicked.connect(self.prev_clicked.emit)
+        self.prev_btn.setFixedSize(34, 34)
+        self.prev_btn.clicked.connect(lambda _checked=False: self.prev_clicked.emit())
         controls_layout.addWidget(self.prev_btn)
         
         # 播放/暂停
         self.play_btn = ToolButton(FluentIcon.PLAY_SOLID)
-        self.play_btn.setFixedSize(44, 44)
+        self.play_btn.setFixedSize(40, 40)
         self._update_play_btn_style()
         self.play_btn.clicked.connect(self._on_play_clicked)
         controls_layout.addWidget(self.play_btn)
         
         # 下一曲
         self.next_btn = TransparentToolButton(FluentIcon.CARE_RIGHT_SOLID)
-        self.next_btn.setFixedSize(36, 36)
-        self.next_btn.clicked.connect(self.next_clicked.emit)
+        self.next_btn.setFixedSize(34, 34)
+        self.next_btn.clicked.connect(lambda _checked=False: self.next_clicked.emit())
         controls_layout.addWidget(self.next_btn)
         
         # 停止
         self.stop_btn = TransparentToolButton(FluentIcon.CANCEL_MEDIUM)
-        self.stop_btn.setFixedSize(36, 36)
+        self.stop_btn.setFixedSize(34, 34)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         controls_layout.addWidget(self.stop_btn)
         
         layout.addLayout(controls_layout)
         
         # 添加弹性空间
-        layout.addSpacing(20)
+        layout.addSpacing(12)
         
         # 进度条区域
         progress_layout = QVBoxLayout()
-        progress_layout.setSpacing(4)
+        progress_layout.setSpacing(3)
         
         self.progress_slider = Slider(Qt.Orientation.Horizontal)
+        self.progress_slider.setObjectName("playerBarProgressSlider")
         self.progress_slider.setRange(0, 100)
         self.progress_slider.setValue(0)
         
@@ -190,35 +193,38 @@ class PlayerBar(CardWidget):
         # 时间显示
         time_layout = QHBoxLayout()
         self.current_time = CaptionLabel("0:00")
-        self.current_time.setStyleSheet("background: transparent;")
+        self.current_time.setObjectName("playerBarTime")
         self.total_time = CaptionLabel("0:00")
-        self.total_time.setStyleSheet("background: transparent;")
+        self.total_time.setObjectName("playerBarTime")
         time_layout.addWidget(self.current_time)
         time_layout.addStretch()
         time_layout.addWidget(self.total_time)
         progress_layout.addLayout(time_layout)
         
         progress_widget = QWidget()
-        progress_widget.setStyleSheet("background: transparent;")
+        progress_widget.setObjectName("playerBarProgress")
         progress_widget.setLayout(progress_layout)
-        progress_widget.setMinimumWidth(350)  # 增加进度条最小宽度
+        progress_widget.setMinimumWidth(360)
+        progress_widget.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(progress_widget, 1)  # 让进度条可以伸展
         
         # 添加弹性空间
-        layout.addSpacing(20)
+        layout.addSpacing(12)
         
         # 右侧：音量控制
         volume_layout = QHBoxLayout()
-        volume_layout.setSpacing(8)
+        volume_layout.setSpacing(6)
+        volume_layout.setContentsMargins(0, 0, 0, 0)
         
         self.volume_btn = TransparentToolButton(FluentIcon.VOLUME)
-        self.volume_btn.setFixedSize(32, 32)
+        self.volume_btn.setFixedSize(30, 30)
         volume_layout.addWidget(self.volume_btn)
         
         self.volume_slider = Slider(Qt.Orientation.Horizontal)
+        self.volume_slider.setObjectName("playerBarVolumeSlider")
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(80)
-        self.volume_slider.setFixedWidth(100)
+        self.volume_slider.setFixedWidth(110)
         self.volume_slider.valueChanged.connect(self.volume_changed.emit)
         volume_layout.addWidget(self.volume_slider)
         
@@ -226,18 +232,8 @@ class PlayerBar(CardWidget):
     
     def _update_play_btn_style(self):
         """更新播放按钮样式"""
-        self.play_btn.setStyleSheet("""
-            ToolButton {
-                background-color: #0078D4;
-                border-radius: 22px;
-            }
-            ToolButton:hover {
-                background-color: #1084D8;
-            }
-            ToolButton:pressed {
-                background-color: #006CBD;
-            }
-        """)
+        # 交由全局 token QSS 控制
+        self.play_btn.setObjectName("playerBarPlayBtn")
     
     def _on_play_clicked(self):
         """播放/暂停按钮点击"""

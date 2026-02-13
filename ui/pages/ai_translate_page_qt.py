@@ -5,6 +5,7 @@ AI翻译页面 - 完整功能版本
 
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -12,25 +13,25 @@ from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QTreeWidgetItem, QListWidget, QListWidgetItem, QFrame,
-    QSizePolicy
+    QSizePolicy, QGridLayout
 )
 from PySide6.QtGui import QFont
 
 from qfluentwidgets import (
     ScrollArea, PushButton, PrimaryPushButton, ComboBox, LineEdit,
     FluentIcon, CardWidget, TitleLabel, SubtitleLabel,
-    BodyLabel, CaptionLabel, TransparentToolButton, IconWidget,
-    TableWidget, ProgressBar, TextEdit, Dialog, TreeWidget
+    BodyLabel, CaptionLabel, TransparentToolButton, TransparentPushButton, IconWidget,
+    TableWidget, ProgressBar, TextEdit, Dialog, TreeWidget, isDarkTheme
 )
 
 # Architecture refactoring: use centralized utilities
 from transcriptionist_v3.ui.utils.notifications import NotificationHelper
 from transcriptionist_v3.ui.utils.workers import ApplyTranslationJobWorker, TranslateJobWorker, cleanup_thread
-from transcriptionist_v3.ui.utils.hierarchical_translate_worker import HierarchicalTranslateWorker
 from transcriptionist_v3.application.naming_manager.glossary import GlossaryManager
 from transcriptionist_v3.application.naming_manager.cleaning import CleaningManager
 from transcriptionist_v3.application.naming_manager.templates import TemplateManager, NamingTemplate
 from transcriptionist_v3.application.library_manager.renaming_service import RenamingService
+from transcriptionist_v3.ui.themes.theme_tokens import get_theme_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class AITranslatePage(QWidget):
         # v2 selection (folders/all) from LibraryPage.selection_changed
         self._library_provider = None  # type: ignore
         self._library_selection: Optional[dict] = None
+        self._last_translate_selection: Optional[dict] = None
         self._translation_results = {}  # 原路径 -> 翻译结果（已显示的）
         self._glossary_manager = GlossaryManager.instance()
         self._cleaning_manager = CleaningManager.instance()
@@ -75,6 +77,9 @@ class AITranslatePage(QWidget):
         self._apply_job_thread: Optional[QThread] = None
         self._apply_job_worker: Optional[ApplyTranslationJobWorker] = None
         self._job_cache = {}
+        self._last_apply_selection: Optional[dict] = None
+        self._apply_job_started_at: Optional[datetime] = None
+        self._pending_folder_translations: list[dict] = []
         
         # 撤销历史记录 (old_path, new_path)
         self._undo_stack = []
@@ -95,8 +100,7 @@ class AITranslatePage(QWidget):
         
         title = SubtitleLabel("AI翻译")
         desc = CaptionLabel("使用AI将英文音效名称翻译为中文，支持术语库和多种AI模型")
-        desc.setTextColor(Qt.GlobalColor.gray)
-        desc.setStyleSheet("background: transparent")
+        desc.setObjectName("aiTranslateHeaderDesc")
         
         header_text.addWidget(title)
         header_text.addWidget(desc)
@@ -104,7 +108,8 @@ class AITranslatePage(QWidget):
         header_layout.addStretch()
         
         # 规则按钮（右上角）
-        self.rules_btn = PushButton(FluentIcon.BOOK_SHELF, "规则")
+        self.rules_btn = TransparentPushButton(FluentIcon.BOOK_SHELF, "规则")
+        self.rules_btn.setFixedHeight(30)
         self.rules_btn.clicked.connect(self._on_open_rules)
         header_layout.addWidget(self.rules_btn, 0, Qt.AlignmentFlag.AlignTop)
         
@@ -115,12 +120,14 @@ class AITranslatePage(QWidget):
         # Custom Splitter for content
         from PySide6.QtWidgets import QSplitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("aiTranslateMainSplitter")
         splitter.setHandleWidth(8)
         splitter.setChildrenCollapsible(False)
         
         # 左侧：设置和文件选择
         left_card = CardWidget()
-        left_card.setMinimumWidth(320) # Ensure settings are readable
+        left_card.setObjectName("aiTranslateLeftCard")
+        left_card.setMinimumWidth(300)
         left_layout = QVBoxLayout(left_card)
         left_layout.setContentsMargins(16, 16, 16, 16)
         left_layout.setSpacing(12)
@@ -131,14 +138,13 @@ class AITranslatePage(QWidget):
         file_section.addWidget(file_label)
         
         self.file_count_label = BodyLabel("已选择 0 个文件")
-        self.file_count_label.setStyleSheet("background: transparent")
         file_section.addWidget(self.file_count_label)
         
         file_hint = CaptionLabel("在音效库中勾选文件，然后点击下方按钮")
-        file_hint.setStyleSheet("background: transparent")
         file_section.addWidget(file_hint)
         
-        self.clear_list_btn = PushButton(FluentIcon.DELETE, "清空待翻译列表")
+        self.clear_list_btn = TransparentPushButton(FluentIcon.DELETE, "清空待翻译列表")
+        self.clear_list_btn.setFixedHeight(32)
         self.clear_list_btn.clicked.connect(self._on_clear_list)
         file_section.addWidget(self.clear_list_btn)
         
@@ -156,18 +162,18 @@ class AITranslatePage(QWidget):
         task_btn_row = QHBoxLayout()
         task_btn_row.setSpacing(8)
         
-        self.job_refresh_btn = PushButton(FluentIcon.SYNC, "刷新")
-        self.job_refresh_btn.setFixedWidth(80)
+        self.job_refresh_btn = TransparentPushButton(FluentIcon.SYNC, "刷新")
+        self.job_refresh_btn.setMinimumWidth(72)
         self.job_refresh_btn.clicked.connect(self._refresh_job_list)
         task_btn_row.addWidget(self.job_refresh_btn)
         
-        self.job_resume_btn = PushButton(FluentIcon.PLAY, "继续/重试")
-        self.job_resume_btn.setFixedWidth(100)
+        self.job_resume_btn = TransparentPushButton(FluentIcon.PLAY, "继续/重试")
+        self.job_resume_btn.setMinimumWidth(90)
         self.job_resume_btn.clicked.connect(self._on_resume_job_clicked)
         task_btn_row.addWidget(self.job_resume_btn)
         
-        self.job_stop_btn = PushButton(FluentIcon.CLOSE, "停止")
-        self.job_stop_btn.setFixedWidth(80)
+        self.job_stop_btn = TransparentPushButton(FluentIcon.CLOSE, "停止")
+        self.job_stop_btn.setMinimumWidth(72)
         self.job_stop_btn.clicked.connect(self._on_stop_job_clicked)
         task_btn_row.addWidget(self.job_stop_btn)
         
@@ -176,9 +182,10 @@ class AITranslatePage(QWidget):
 
         # 任务列表
         self.job_list = QListWidget()
-        self.job_list.setFixedHeight(90)
+        self.job_list.setMinimumHeight(90)
         self.job_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.job_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.job_list.setObjectName("aiTranslateJobList")
         task_section.addWidget(self.job_list)
 
         left_layout.addLayout(task_section)
@@ -186,41 +193,46 @@ class AITranslatePage(QWidget):
         # 分隔线
         left_layout.addSpacing(12)
         
-        # 语言设置
-        lang_section = QHBoxLayout()
-        
-        source_box = QVBoxLayout()
+        # 语言设置（严格两行三列网格，保证对齐）
+        lang_section = QGridLayout()
+        lang_section.setContentsMargins(0, 0, 0, 0)
+        lang_section.setHorizontalSpacing(10)
+        lang_section.setVerticalSpacing(8)
+
         source_label = CaptionLabel("源语言")
-        source_label.setStyleSheet("background: transparent")
-        source_box.addWidget(source_label)
+        target_label = CaptionLabel("目标语言")
+
         self.source_combo = ComboBox()
         self.source_combo.addItems(["自动检测", "英语", "日语", "韩语", "俄语", "德语", "法语", "西班牙语"])
-        self.source_combo.setFixedWidth(120)
-        source_box.addWidget(self.source_combo)
-        lang_section.addLayout(source_box)
-        
-        arrow = BodyLabel("→")
-        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        arrow.setStyleSheet("background: transparent")
-        lang_section.addWidget(arrow)
-        
-        target_box = QVBoxLayout()
-        target_label = CaptionLabel("目标语言")
-        target_label.setStyleSheet("background: transparent")
-        target_box.addWidget(target_label)
+        self.source_combo.setMinimumWidth(140)
+        self.source_combo.setMinimumHeight(36)
+        self.source_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         self.target_combo = ComboBox()
         self.target_combo.addItems(["简体中文", "繁体中文", "英语", "日语", "韩语"])
-        self.target_combo.setFixedWidth(120)
-        target_box.addWidget(self.target_combo)
-        lang_section.addLayout(target_box)
-        
-        lang_section.addStretch()
+        self.target_combo.setMinimumWidth(140)
+        self.target_combo.setMinimumHeight(36)
+        self.target_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        arrow = BodyLabel("→")
+        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow.setMinimumWidth(18)
+
+        lang_section.addWidget(source_label, 0, 0)
+        lang_section.addWidget(target_label, 0, 2)
+        lang_section.addWidget(self.source_combo, 1, 0)
+        lang_section.addWidget(arrow, 1, 1)
+        lang_section.addWidget(self.target_combo, 1, 2)
+        lang_section.setColumnStretch(0, 1)
+        lang_section.setColumnStretch(2, 1)
+
         left_layout.addLayout(lang_section)
         
         left_layout.addStretch()
         
         # 翻译按钮
         self.translate_btn = PrimaryPushButton(FluentIcon.SEND, "开始翻译")
+        self.translate_btn.setObjectName("aiTranslateStartButton")
         self.translate_btn.setFixedHeight(48) # Modern UI: Taller button
         self.translate_btn.clicked.connect(self._on_translate)
         left_layout.addWidget(self.translate_btn)
@@ -229,6 +241,7 @@ class AITranslatePage(QWidget):
         
         # 右侧：翻译结果
         right_card = CardWidget()
+        right_card.setObjectName("aiTranslateRightCard")
         right_layout = QVBoxLayout(right_card)
         right_layout.setContentsMargins(16, 16, 16, 16)
         right_layout.setSpacing(12)
@@ -239,12 +252,12 @@ class AITranslatePage(QWidget):
         result_header.addWidget(result_label)
         result_header.addStretch()
         
-        self.apply_all_btn = PushButton(FluentIcon.ACCEPT, "全部替换")
+        self.apply_all_btn = PrimaryPushButton(FluentIcon.ACCEPT, "全部替换")
         self.apply_all_btn.clicked.connect(self._on_apply_all)
         self.apply_all_btn.setEnabled(False)
         result_header.addWidget(self.apply_all_btn)
         
-        self.undo_btn = PushButton(FluentIcon.HISTORY, "撤销全部替换")
+        self.undo_btn = TransparentPushButton(FluentIcon.HISTORY, "撤销全部替换")
         self.undo_btn.clicked.connect(self._on_undo_all)
         self.undo_btn.setEnabled(False)
         result_header.addWidget(self.undo_btn)
@@ -258,8 +271,6 @@ class AITranslatePage(QWidget):
         
         # 状态文本标签
         self.progress_label = CaptionLabel("准备就绪")
-        self.progress_label.setTextColor(Qt.GlobalColor.gray)
-        self.progress_label.setStyleSheet("background: transparent")
         self.progress_container.addWidget(self.progress_label)
         
         # 进度条
@@ -270,7 +281,6 @@ class AITranslatePage(QWidget):
         self.progress_container.addWidget(self.progress_bar)
         
         self.progress_widget = QWidget()
-        self.progress_widget.setStyleSheet("background: transparent")
         self.progress_widget.setLayout(self.progress_container)
         self.progress_widget.hide()
         right_layout.addWidget(self.progress_widget)
@@ -288,7 +298,7 @@ class AITranslatePage(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.result_tree.setColumnWidth(2, 90)
-        self.result_tree.setColumnWidth(3, 110)
+        self.result_tree.setColumnWidth(3, 76)
         
         self.result_tree.itemDoubleClicked.connect(self._on_result_double_clicked)
         right_layout.addWidget(self.result_tree, 1)
@@ -530,6 +540,158 @@ class AITranslatePage(QWidget):
                 query = query.limit(limit)
             rows = query.all()
             return [row.file_path for row in rows]
+
+    def _count_translated_candidates(self, selection: dict) -> int:
+        """统计当前选择范围内可应用的翻译条数（translated_name 非空）。"""
+        if not selection or selection.get("mode") == "none":
+            return 0
+        from transcriptionist_v3.infrastructure.database.connection import session_scope
+        from transcriptionist_v3.infrastructure.database.models import AudioFile
+        from transcriptionist_v3.application.ai_jobs.selection import apply_selection_filters
+
+        with session_scope() as session:
+            query = session.query(AudioFile.id)
+            query = apply_selection_filters(query, selection)
+            query = query.filter(AudioFile.translated_name.isnot(None))
+            return int(query.count() or 0)
+
+    def _load_translated_items_from_db(self, selection: dict, limit: Optional[int] = None) -> list:
+        """从数据库加载已翻译条目，用于结果树展示（数据库单一数据源）。"""
+        if not selection or selection.get("mode") == "none":
+            return []
+
+        from transcriptionist_v3.infrastructure.database.connection import session_scope
+        from transcriptionist_v3.infrastructure.database.models import AudioFile
+        from transcriptionist_v3.application.ai_jobs.selection import apply_selection_filters
+        from transcriptionist_v3.ui.utils.translation_items import TranslationItem
+
+        with session_scope() as session:
+            query = session.query(AudioFile.file_path, AudioFile.filename, AudioFile.translated_name, AudioFile.id)
+            query = apply_selection_filters(query, selection)
+            query = query.filter(AudioFile.translated_name.isnot(None))
+            query = query.order_by(AudioFile.id.asc())
+            if limit and int(limit) > 0:
+                query = query.limit(int(limit))
+            rows = query.all()
+
+        items = []
+        for row in rows:
+            file_path = str(row.file_path or "").strip()
+            translated_name = str(row.translated_name or "").strip()
+            if not file_path or not translated_name:
+                continue
+
+            path_obj = Path(file_path)
+            items.append(
+                TranslationItem(
+                    path=file_path,
+                    name=str(row.filename or path_obj.name),
+                    item_type="file",
+                    parent_path=str(path_obj.parent),
+                    level=max(1, len(path_obj.parts)),
+                    translated=translated_name,
+                )
+            )
+
+        return items
+
+    def _collect_undo_operations_from_history(self, selection: dict, since: datetime | None = None) -> list[tuple[str, str]]:
+        """从数据库历史中恢复可撤销操作，支持任务化替换后的撤销。"""
+        if not selection or selection.get("mode") == "none":
+            return []
+
+        from transcriptionist_v3.infrastructure.database.connection import session_scope
+        from transcriptionist_v3.infrastructure.database.models import RenameHistory
+        from sqlalchemy import or_
+
+        def _chunked(values: list[str], size: int) -> list[list[str]]:
+            if size <= 0:
+                return [values]
+            return [values[i : i + size] for i in range(0, len(values), size)]
+
+        def _iter_rows(base_query, mode: str):
+            # 关键：按 RenameHistory.old_path 过滤，而不是按 AudioFile.file_path。
+            # 因为替换后 AudioFile.file_path 已变成新路径，会导致无法匹配旧选择。
+            if mode == "files":
+                files = [str(p) for p in (selection.get("files") or []) if p]
+                if not files:
+                    return []
+                rows = []
+                for batch in _chunked(files, 500):
+                    rows.extend(base_query.filter(RenameHistory.old_path.in_(batch)).all())
+                return rows
+
+            if mode == "folders":
+                folders = [str(p) for p in (selection.get("folders") or []) if p]
+                if not folders:
+                    return []
+                prefixes = []
+                for folder in folders:
+                    norm = os.path.normpath(folder)
+                    if not norm.endswith(os.sep):
+                        norm += os.sep
+                    prefixes.append(norm)
+                prefixes = list(dict.fromkeys(prefixes))
+                rows = []
+                for prefix_batch in _chunked(prefixes, 100):
+                    clauses = [RenameHistory.old_path.like(prefix + "%") for prefix in prefix_batch]
+                    if clauses:
+                        rows.extend(base_query.filter(or_(*clauses)).all())
+                return rows
+
+            # mode == all
+            return base_query.all()
+
+        pairs: list[tuple[str, str]] = []
+        seen_ids: set[int] = set()
+        with session_scope() as session:
+            query = (
+                session.query(RenameHistory.old_path, RenameHistory.new_path, RenameHistory.id)
+            )
+            if since is not None:
+                query = query.filter(RenameHistory.renamed_at >= since)
+            query = query.order_by(RenameHistory.id.asc())
+
+            mode = str(selection.get("mode") or "none")
+            rows = _iter_rows(query, mode)
+            for old_path, new_path, row_id in rows:
+                row_id = int(row_id or 0)
+                if row_id <= 0 or row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+                old_str = str(old_path or "")
+                new_str = str(new_path or "")
+                if not old_str or not new_str or old_str == new_str:
+                    continue
+                pairs.append((old_str, new_str))
+
+        return pairs
+
+    def _restore_undo_stack_from_history(self) -> int:
+        """当内存撤销栈为空时，尝试从数据库恢复。"""
+        selection = self._last_apply_selection or self._get_active_selection()
+        if not selection or selection.get("mode") == "none":
+            return 0
+
+        pairs = self._collect_undo_operations_from_history(
+            selection,
+            since=self._apply_job_started_at,
+        )
+        if not pairs:
+            return 0
+
+        # 只保留当前仍可回滚的记录（new_path 存在，old_path 不存在）
+        filtered: list[tuple[str, str]] = []
+        for old_path, new_path in pairs:
+            if Path(new_path).exists() and not Path(old_path).exists():
+                filtered.append((old_path, new_path))
+
+        if not filtered:
+            return 0
+
+        self._undo_stack = filtered
+        self.undo_btn.setEnabled(True)
+        return len(filtered)
     
     def _on_clear_list(self):
         """清空待翻译列表"""
@@ -561,7 +723,7 @@ class AITranslatePage(QWidget):
         logger.info("AI Translate page cleared due to library reset")
 
     def _on_translate(self):
-        """开始翻译"""
+        """开始翻译（统一走数据库任务化流程）。"""
         selection = self._get_active_selection()
         count = int(selection.get("count", 0) or 0)
         if selection.get("mode") == "none" or count == 0:
@@ -572,19 +734,18 @@ class AITranslatePage(QWidget):
             )
             return
 
-        from transcriptionist_v3.core.config import AppConfig
         api_key, model_config, _, error_msg = self._resolve_translation_model_config()
         if error_msg:
             NotificationHelper.error(self, "配置缺失", error_msg)
             return
 
-        # 清空结果树
+        # 清空当前展示，新的翻译结果将从数据库回填
         self.result_tree.clear()
         self._translation_results.clear()
         self._all_translation_items = []
         self._displayed_count = 0
+        self._pending_folder_translations = []
 
-        # 显示进度展示区域
         self.progress_widget.show()
         self.progress_bar.setValue(0)
         self.progress_label.setText("正在连接AI引擎...")
@@ -592,68 +753,16 @@ class AITranslatePage(QWidget):
         self.translate_btn.setText("正在翻译...")
         self.apply_all_btn.setEnabled(False)
 
-        # 获取源语言和目标语言
         source_lang = self.source_combo.currentText()
         target_lang = self.target_combo.currentText()
 
-        # 超大选择：走任务化翻译，避免全量路径展开
-        preview_threshold = AppConfig.get("performance.translate_preview_threshold", self.DISPLAY_CAP)
-        try:
-            preview_threshold = int(preview_threshold)
-        except (TypeError, ValueError):
-            preview_threshold = self.DISPLAY_CAP
-        if preview_threshold < 1:
-            preview_threshold = self.DISPLAY_CAP
-
-        if count > preview_threshold:
-            self._start_translate_job(
-                selection=selection,
-                api_key=api_key,
-                model_config=model_config,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
-            return
-
-        # 小规模：解析为路径列表再走分层翻译
-        files = self._resolve_selection_paths(selection, limit=count)
-        self._selected_files = files
-
-        if not self._selected_files:
-            self.progress_widget.hide()
-            self.translate_btn.setEnabled(True)
-            self.translate_btn.setText("开始翻译")
-            NotificationHelper.warning(
-                self,
-                "提示",
-                "请先选择要翻译的文件"
-            )
-            return
-
-        # 使用 QThread + Worker（层级化翻译）
-        self._translate_thread = QThread()
-
-        logger.info("Using HierarchicalTranslateWorker")
-        self._translate_worker = HierarchicalTranslateWorker(
-            files=list(self._selected_files),
+        self._start_translate_job(
+            selection=selection,
             api_key=api_key,
             model_config=model_config,
-            glossary=self._glossary_manager.get_all(),
-            template_id=self._template_manager.active_template_id,
             source_lang=source_lang,
-            target_lang=target_lang
+            target_lang=target_lang,
         )
-
-        self._translate_worker.moveToThread(self._translate_thread)
-
-        # 连接信号
-        self._translate_thread.started.connect(self._translate_worker.run)
-        self._translate_worker.finished.connect(self._on_translate_finished)
-        self._translate_worker.error.connect(self._on_translate_error)
-        self._translate_worker.progress.connect(self._on_translate_progress)
-
-        # 启动线程
-        self._translate_thread.start()
 
     def _start_translate_job(
         self,
@@ -667,6 +776,10 @@ class AITranslatePage(QWidget):
     ):
         """启动任务化翻译（不展开全量路径）。"""
         from transcriptionist_v3.core.config import AppConfig
+        try:
+            self._last_translate_selection = dict(selection or {})
+        except Exception:
+            self._last_translate_selection = selection
 
         try:
             cleanup_thread(self._translate_job_thread, self._translate_job_worker)
@@ -715,17 +828,61 @@ class AITranslatePage(QWidget):
         self._cleanup_translate_job_thread()
         processed = int(result.get("processed", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
+        self._pending_folder_translations = list(result.get("folder_translations", []) or [])
 
         self.progress_bar.setValue(100)
         self.progress_label.setText("翻译完成")
         self.progress_widget.hide()
         self.translate_btn.setEnabled(True)
         self.translate_btn.setText("开始翻译")
+        self.apply_all_btn.setEnabled(processed > 0)
+
+        # 翻译完成后，从数据库回填预览结果树（数据库单一数据源）。
+        selection = self._last_translate_selection or self._get_active_selection()
+        from transcriptionist_v3.core.config import AppConfig
+        preview_limit = AppConfig.get("performance.translate_preview_threshold", self.DISPLAY_CAP)
+        try:
+            preview_limit = int(preview_limit)
+        except (TypeError, ValueError):
+            preview_limit = self.DISPLAY_CAP
+        if preview_limit < 1:
+            preview_limit = self.DISPLAY_CAP
+
+        db_items = self._load_translated_items_from_db(selection=selection, limit=preview_limit)
+        if self._pending_folder_translations:
+            try:
+                from transcriptionist_v3.ui.utils.translation_items import TranslationItem
+                folder_items = []
+                for row in self._pending_folder_translations:
+                    old_path = str((row or {}).get("old_path") or "").strip()
+                    translated_name = str((row or {}).get("translated_name") or "").strip()
+                    if not old_path or not translated_name:
+                        continue
+                    path_obj = Path(old_path)
+                    folder_items.append(
+                        TranslationItem(
+                            path=old_path,
+                            name=path_obj.name,
+                            item_type="folder",
+                            parent_path=str(path_obj.parent),
+                            level=max(1, len(path_obj.parts)),
+                            translated=translated_name,
+                        )
+                    )
+                if folder_items:
+                    db_items.extend(folder_items)
+            except Exception as e:
+                logger.warning(f"Failed to build folder preview items: {e}")
+        if db_items:
+            self._update_results(db_items)
+            logger.info("Translate job finished: loaded %s translated items from database", len(db_items))
+        else:
+            logger.info("Translate job finished: no translated rows loaded for preview")
 
         NotificationHelper.success(
             self,
             "翻译完成",
-            f"已翻译 {processed} 个文件，失败 {failed} 个。结果已写入库，可在列表中查看"
+            f"已翻译 {processed} 个文件，失败 {failed} 个。结果已写入数据库。"
         )
         self._refresh_job_list()
 
@@ -1062,20 +1219,20 @@ class AITranslatePage(QWidget):
         
         # 为该节点添加"加载更多"按钮
         btn_container = QWidget()
-        btn_container.setStyleSheet("background: transparent")
         btn_layout = QHBoxLayout(btn_container)
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(8)
-        
-        load_more_btn = PushButton("加载更多")
-        load_more_btn.setFixedSize(80, 26)
+
+        load_more_btn = PrimaryPushButton(FluentIcon.DOWN, "加载更多")
+        load_more_btn.setMinimumHeight(30)
+        load_more_btn.setMinimumWidth(104)
         load_more_btn.clicked.connect(self._on_load_more)
         btn_layout.addWidget(load_more_btn)
         
         # 提示：大数据量时建议直接"应用全部"
         if remaining > 5000:
             hint_label = CaptionLabel("(数据量较大，建议直接点击「应用全部」)")
-            hint_label.setStyleSheet("background: transparent; color: #888;")
+            hint_label.setObjectName("aiTranslateLoadMoreHint")
             btn_layout.addWidget(hint_label)
         
         self.result_tree.setItemWidget(hint_item, 3, btn_container)
@@ -1146,20 +1303,22 @@ class AITranslatePage(QWidget):
     def _add_tree_item_widgets(self, tree_item, item):
         """为树节点添加操作按钮"""
         btn_container = QWidget()
-        btn_container.setStyleSheet("background: transparent")
+        btn_container.setObjectName("aiTranslateTreeActionBar")
         btn_layout = QHBoxLayout(btn_container)
         btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(4)
-        
-        # 替换按钮 (纯文字)
-        apply_btn = PushButton("应用")
-        apply_btn.setFixedSize(50, 26)
+        btn_layout.setSpacing(6)
+
+        # 替换按钮
+        apply_btn = TransparentToolButton(FluentIcon.ACCEPT)
+        apply_btn.setFixedSize(28, 26)
+        apply_btn.setToolTip("应用")
         apply_btn.clicked.connect(lambda: self._on_apply_single(tree_item))
         btn_layout.addWidget(apply_btn)
-        
-        # 删除按钮 (纯文字)
-        del_btn = PushButton("删除")
-        del_btn.setFixedSize(50, 26)
+
+        # 删除按钮
+        del_btn = TransparentToolButton(FluentIcon.DELETE)
+        del_btn.setFixedSize(28, 26)
+        del_btn.setToolTip("删除")
         del_btn.clicked.connect(lambda: self._on_remove_tree_item(tree_item))
         btn_layout.addWidget(del_btn)
         
@@ -1434,138 +1593,42 @@ class AITranslatePage(QWidget):
         return all_items
 
     def _on_apply_all(self):
-        """应用所有翻译结果 (自底向上策略，先文件后文件夹) - 优化版本，支持大数据量"""
+        """应用所有翻译结果（统一数据库路径，不再依赖内存结果）。"""
         self.request_stop_player.emit()
 
         selection = self._get_active_selection()
         count = int(selection.get("count", 0) or 0)
-        if selection.get("mode") == "none" and self._all_translation_items:
-            selection = self._build_selection_from_items(self._all_translation_items)
-            count = int(selection.get("count", 0) or 0)
 
-        # 优先使用完整的翻译结果列表（即使 UI 只显示了部分）
-        if self._all_translation_items:
-            all_items = self._all_translation_items
-        else:
-            # 回退到树节点（兼容旧逻辑）
-            all_tree_items = self._get_all_tree_items()
-            if not all_tree_items:
-                return
-            all_items = [item.data(0, Qt.ItemDataRole.UserRole) for item in all_tree_items 
-                        if item.data(0, Qt.ItemDataRole.UserRole)]
-        
-        if not all_items:
+        if (selection.get("mode") == "none" or count == 0) and self._last_translate_selection:
+            fallback_count = int((self._last_translate_selection or {}).get("count", 0) or 0)
+            if fallback_count > 0:
+                selection = dict(self._last_translate_selection)
+                count = fallback_count
+
+        if selection.get("mode") == "none" or count == 0:
+            job_id = self._get_selected_job_id()
+            job = self._job_cache.get(job_id) if job_id else None
+            if job:
+                selection = self._normalize_job_selection(job, job.selection or {})
+                count = int(selection.get("count", 0) or 0)
+
+        if selection.get("mode") == "none" or count == 0:
+            NotificationHelper.warning(self, "提示", "请先选择要替换的翻译结果")
             return
 
-        # 超大批量：走任务化应用（避免 UI 卡死）
-        from transcriptionist_v3.core.config import AppConfig
-        threshold = AppConfig.get("performance.apply_translation_job_threshold", 2000)
-        try:
-            threshold = int(threshold)
-        except (TypeError, ValueError):
-            threshold = 2000
-        if count >= threshold:
-            self._start_apply_translation_job(selection=selection, job_id=None)
+        candidates = self._count_translated_candidates(selection)
+        if candidates <= 0:
+            NotificationHelper.info(self, "无需操作", "当前选择范围内没有可应用的翻译结果")
+            logger.info("Apply all skipped: no translated candidates in database")
             return
-        
-        # 按照路径深度倒序排序 (确保自底向上: 最深的文件先处理，最外层的目录最后处理)
-        import os
-        sorted_items = sorted(
-            all_items,
-            key=lambda x: x.path.count(os.sep) if hasattr(x, 'path') else 0,
-            reverse=True
+
+        logger.info(
+            "Apply all (db-only): mode=%s, selected=%s, candidates=%s",
+            selection.get("mode"),
+            count,
+            candidates,
         )
-        
-        # 筛选出待应用的项目（status == '待应用'）
-        pending_items = [item for item in sorted_items if getattr(item, 'status', '待应用') == '待应用']
-        if not pending_items:
-            NotificationHelper.info(self, "无需操作", "没有待应用的翻译结果")
-            return
-        
-        total_count = len(pending_items)
-        logger.info(f"Apply all: {total_count} pending items (total: {len(all_items)})")
-        
-        success_count = 0
-        failed_items = []
-        
-        # 显示进度
-        self.progress_widget.show()
-        self.progress_label.setText(f"正在应用: 0/{total_count}")
-        
-        # 批量处理：使用 QTimer 分批处理，避免UI卡死
-        from PySide6.QtWidgets import QApplication
-        from PySide6.QtCore import QTimer
-        
-        batch_size = 50  # 每批处理50个（不涉及 UI 节点创建，可以更大）
-        batch_index = 0
-        
-        def process_batch():
-            nonlocal success_count, batch_index
-            
-            start_idx = batch_index * batch_size
-            end_idx = min(start_idx + batch_size, total_count)
-            
-            if start_idx >= total_count:
-                finish_batch_apply()
-                return
-            
-            # 处理当前批次
-            for i in range(start_idx, end_idx):
-                item = pending_items[i]
-                
-                try:
-                    success = self._apply_single_item(item)
-                    if success:
-                        success_count += 1
-                    else:
-                        failed_items.append(getattr(item, 'name', 'unknown'))
-                except Exception as e:
-                    logger.error(f"Failed to apply translation for {getattr(item, 'name', 'unknown')}: {e}")
-                    failed_items.append(getattr(item, 'name', 'unknown'))
-            
-            # 更新进度
-            self.progress_label.setText(f"正在应用: {end_idx}/{total_count}")
-            
-            batch_index += 1
-            
-            # 每批结束后让 UI 响应
-            QApplication.processEvents()
-            
-            # 继续处理下一批（使用较短的延迟，保持流畅性）
-            QTimer.singleShot(5, process_batch)
-        
-        def finish_batch_apply():
-            """批量操作完成后的清理工作"""
-            # 隐藏进度
-            self.progress_widget.hide()
-            
-            # 显示结果通知
-            if success_count > 0:
-                if failed_items:
-                    NotificationHelper.warning(
-                        self,
-                        "批量应用部分成功",
-                        f"成功处理 {success_count}/{total_count} 个项目\n失败 {len(failed_items)} 个: {', '.join(failed_items[:3])}{'...' if len(failed_items) > 3 else ''}"
-                    )
-                else:
-                    NotificationHelper.success(
-                        self,
-                        "批量应用完成",
-                        f"成功处理 {success_count}/{total_count} 个待应用项目"
-                    )
-            elif total_count > 0:
-                NotificationHelper.error(
-                    self,
-                    "批量应用失败",
-                    f"所有 {total_count} 个项目应用失败"
-                )
-            
-            # 如果有成功应用的项目，启用撤销按钮
-            if self._undo_stack:
-                self.undo_btn.setEnabled(True)
-        
-        # 开始批量处理
-        process_batch()
+        self._start_apply_translation_job(selection=selection, job_id=None)
 
     def _start_apply_translation_job(self, selection: dict, job_id: int | None):
         """启动任务化应用翻译结果。"""
@@ -1586,11 +1649,14 @@ class AITranslatePage(QWidget):
         self.progress_bar.setValue(0)
         self.progress_label.setText("正在应用翻译结果...")
         self.apply_all_btn.setEnabled(False)
+        self._last_apply_selection = dict(selection or {})
+        self._apply_job_started_at = datetime.utcnow()
 
         self._apply_job_thread = QThread()
         self._apply_job_worker = ApplyTranslationJobWorker(
             selection=selection,
             batch_size=batch_size,
+            folder_translations=self._pending_folder_translations,
             job_id=job_id,
         )
         self._apply_job_worker.moveToThread(self._apply_job_thread)
@@ -1619,10 +1685,36 @@ class AITranslatePage(QWidget):
         self._cleanup_apply_job_thread()
         processed = int(result.get("processed", 0) or 0)
         failed = int(result.get("failed", 0) or 0)
+        folder_processed = int(result.get("folder_processed", 0) or 0)
+        folder_failed = int(result.get("folder_failed", 0) or 0)
+        failed += folder_failed
+        processed += folder_processed
+
+        if self._library_provider is not None and hasattr(self._library_provider, "refresh"):
+            try:
+                self._library_provider.refresh()
+            except Exception as e:
+                logger.warning(f"Library refresh after apply job failed: {e}")
 
         self.progress_widget.hide()
         self.apply_all_btn.setEnabled(True)
         self._refresh_job_list()
+
+        # 任务化替换完成后重建撤销栈，修复“完成后无法撤销”问题
+        self._undo_stack = []
+        if processed > 0:
+            pairs = self._collect_undo_operations_from_history(
+                self._last_apply_selection or self._get_active_selection(),
+                since=self._apply_job_started_at,
+            )
+            # 只保留有效可回滚项
+            self._undo_stack = [
+                (old_path, new_path)
+                for old_path, new_path in pairs
+                if Path(new_path).exists() and not Path(old_path).exists()
+            ]
+        self.undo_btn.setEnabled(bool(self._undo_stack))
+        self._pending_folder_translations = []
 
         if failed:
             NotificationHelper.warning(
@@ -1647,8 +1739,11 @@ class AITranslatePage(QWidget):
     def _on_undo_all(self):
         """撤销所有已应用的重命名（自顶向下策略，带重试机制）- 优化版本，支持大数据量"""
         if not self._undo_stack:
-            logger.info("Undo stack is empty")
-            return
+            restored = self._restore_undo_stack_from_history()
+            if restored <= 0:
+                logger.info("Undo stack is empty")
+                NotificationHelper.info(self, "无可撤销项", "当前没有可撤销的替换记录")
+                return
         
         # 停止播放器以释放文件锁
         self.request_stop_player.emit()
@@ -1813,8 +1908,37 @@ class AITranslatePage(QWidget):
         
         # 创建对话框
         dialog = QDialog(self)
+        dialog.setObjectName("namingRulesDialog")
         dialog.setWindowTitle("命名规则")
         dialog.resize(900, 700)
+
+        tokens = get_theme_tokens(isDarkTheme())
+        dialog.setStyleSheet(
+            f"""
+QDialog#namingRulesDialog {{
+    background-color: {tokens.window_bg};
+    color: {tokens.text_primary};
+}}
+
+QDialog#namingRulesDialog QWidget {{
+    color: {tokens.text_primary};
+}}
+
+QDialog#namingRulesDialog CaptionLabel {{
+    color: {tokens.text_muted};
+    background: transparent;
+}}
+
+QDialog#namingRulesDialog QWidget#namingRulesPage {{
+    background-color: {tokens.window_bg};
+}}
+
+QDialog#namingRulesDialog QWidget#namingRulesPage QStackedWidget,
+QDialog#namingRulesDialog QWidget#namingRulesPage QStackedWidget > QWidget {{
+    background: transparent;
+}}
+"""
+        )
         
         # 创建布局
         dialog_layout = QVBoxLayout(dialog)

@@ -311,12 +311,21 @@ class HyMT15OnnxService(TranslationService):
             results: List[TranslationResult] = []
             
             # 批量处理（根据用户设置的批次大小）
-            from transcriptionist_v3.core.config import AppConfig
-            batch_size = AppConfig.get("ai.translate_chunk_size", 40)
-            try:
-                batch_size = int(batch_size)
-            except (TypeError, ValueError):
-                batch_size = 40
+            from transcriptionist_v3.core.config import AppConfig, get_recommended_translate_chunk_size
+            batch_size = AppConfig.get("ai.translate_chunk_size", None)
+            if batch_size is None:
+                batch_size = get_recommended_translate_chunk_size(
+                    "local",
+                    AppConfig.get("ai.translate_network_profile", "normal"),
+                )
+            else:
+                try:
+                    batch_size = int(batch_size)
+                except (TypeError, ValueError):
+                    batch_size = get_recommended_translate_chunk_size(
+                        "local",
+                        AppConfig.get("ai.translate_network_profile", "normal"),
+                    )
             # 为本地 ONNX 模型设置一个更保守的安全区间，避免显存/内存压力过大
             if batch_size < 1:
                 batch_size = 1

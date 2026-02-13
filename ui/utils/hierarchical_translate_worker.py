@@ -104,6 +104,9 @@ class HierarchicalTranslateWorker(QObject):
             from transcriptionist_v3.core.config import AppConfig
             translation_model_type = AppConfig.get("ai.translation_model_type", "general")
             use_onnx_model = (translation_model_type == "hy_mt15_onnx")
+            provider_id = str((self.model_config or {}).get("provider", "")).strip().lower()
+            allow_without_api_key = (provider_id == "local")
+            can_translate = bool(use_onnx_model or self.api_key or allow_without_api_key)
             
             # 检查专用模型是否可用
             if use_onnx_model:
@@ -116,14 +119,29 @@ class HierarchicalTranslateWorker(QObject):
                     use_onnx_model = False
             
             # 3. 翻译文件
-            if file_items and (self.api_key or use_onnx_model):
+            if file_items and can_translate:
                 logger.info(f"Translating {len(file_items)} files...")
                 file_items = self._translate_files_batch(file_items)
+            elif file_items:
+                logger.warning("Skip file translation: missing API key and no local/ONNX translation available")
+                for item in file_items:
+                    item.translated = Path(item.name).stem
             
             # 4. 翻译文件夹
-            if folder_items and (self.api_key or use_onnx_model):
+            if folder_items and can_translate:
                 logger.info(f"Translating {len(folder_items)} folders...")
                 folder_items = self._translate_folders_batch(folder_items)
+            elif folder_items:
+                logger.warning("Skip folder translation: missing API key and no local/ONNX translation available")
+                for item in folder_items:
+                    item.translated = item.name
+
+            for item in file_items:
+                if not str(getattr(item, "translated", "") or "").strip():
+                    item.translated = Path(item.name).stem
+            for item in folder_items:
+                if not str(getattr(item, "translated", "") or "").strip():
+                    item.translated = item.name
             
             # 5. 合并结果
             all_items = file_items + folder_items
@@ -216,12 +234,20 @@ class HierarchicalTranslateWorker(QObject):
                         
                         # 最终清理：确保文件名安全（防止 WinError 87）
                         clean_translated = sanitize_filename(clean_translated, max_length=200)
-                        
+                        if not clean_translated:
+                            clean_translated = Path(file_items[i].name).stem
+
                         file_items[i].translated = clean_translated
                         file_items[i].category = tr.category or ""
                         file_items[i].subcategory = tr.subcategory or ""
                         file_items[i].descriptor = tr.descriptor or ""
                         file_items[i].variation = tr.variation or ""
+            else:
+                logger.warning(
+                    "File translation service returned unsuccessful result, fallback to original stems"
+                )
+                for item in file_items:
+                    item.translated = Path(item.name).stem
             
             loop.run_until_complete(service.cleanup())
             loop.close()
@@ -230,7 +256,7 @@ class HierarchicalTranslateWorker(QObject):
             logger.error(f"File translation error: {e}")
             # Fallback: keep original names
             for item in file_items:
-                item.translated = item.name
+                item.translated = Path(item.name).stem
         
         return file_items
     
@@ -301,7 +327,15 @@ class HierarchicalTranslateWorker(QObject):
                     if i < len(folder_items):
                         # 清理文件夹名：确保文件夹名安全（防止 WinError 87）
                         clean_translated = sanitize_filename(tr.translated.strip(), max_length=200)
+                        if not clean_translated:
+                            clean_translated = folder_items[i].name
                         folder_items[i].translated = clean_translated
+            else:
+                logger.warning(
+                    "Folder translation service returned unsuccessful result, fallback to original names"
+                )
+                for item in folder_items:
+                    item.translated = item.name
             
             loop.run_until_complete(service.cleanup())
             loop.close()

@@ -21,7 +21,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidgetItem,
-    QFileDialog, QHeaderView, QAbstractItemView, QStackedWidget, QApplication
+    QFileDialog, QHeaderView, QAbstractItemView, QStackedWidget, QApplication, QSizePolicy
 )
 from PySide6.QtGui import QFont, QColor
 
@@ -30,7 +30,7 @@ from qfluentwidgets import (
     FluentIcon, TreeWidget,
     TitleLabel, CaptionLabel, CardWidget, IconWidget,
     SubtitleLabel, BodyLabel, TransparentToolButton,
-    CheckBox, ProgressBar, ComboBox
+    CheckBox, ProgressBar, ComboBox, isDarkTheme
 )
 
 # Architecture refactoring: use centralized utilities
@@ -40,6 +40,7 @@ from transcriptionist_v3.ui.utils.notifications import NotificationHelper
 from transcriptionist_v3.ui.utils.workers import DatabaseLoadWorker, cleanup_thread
 from transcriptionist_v3.application.search_engine.search_engine import SearchEngine
 from transcriptionist_v3.infrastructure.database.connection import session_scope
+from transcriptionist_v3.ui.themes.theme_tokens import get_theme_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -176,27 +177,25 @@ class QueueScanWorker(QObject):
     def cancel(self):
         self._cancelled = True
 
-    def _scan_dir_into_list(self, dir_path: Path) -> list:
-        """递归扫描单个目录并返回路径列表（供并行扫描用，不写共享列表）。"""
-        out = []
+    def _scan_dir_stream(self, dir_path: Path):
+        """递归流式扫描目录，逐个产出匹配文件路径，避免大列表占用内存峰值。"""
         if self._cancelled:
-            return out
+            return
         try:
             with os.scandir(dir_path) as entries:
                 for entry in entries:
                     if self._cancelled:
-                        return out
+                        return
                     if entry.is_file(follow_symlinks=False):
                         file_path = Path(entry.path)
                         if file_path.suffix.lower() in SUPPORTED_FORMATS:
-                            out.append(file_path)
+                            yield file_path
                     elif entry.is_dir(follow_symlinks=False):
-                        out.extend(self._scan_dir_into_list(Path(entry.path)))
+                        yield from self._scan_dir_stream(Path(entry.path))
         except PermissionError:
             logger.warning(f"Permission denied: {dir_path}")
         except Exception as e:
             logger.warning(f"Error scanning {dir_path}: {e}")
-        return out
 
     def _enqueue_paths(self, root_folder: Path, paths: list[str]) -> tuple[int, int]:
         """将路径批量写入导入队列，返回 (enqueued, skipped)。避免 SQLite too many SQL variables。"""
@@ -281,35 +280,34 @@ class QueueScanWorker(QObject):
             except Exception as e:
                 logger.warning(f"Error scanning root: {e}")
 
-            # 一级子目录并行扫描
+            # 一级子目录流式扫描（避免 future 一次性返回大列表导致内存峰值）
             subdirs = [Path(entry.path) for entry in os.scandir(folder) if entry.is_dir(follow_symlinks=False)]
             if subdirs:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
                 max_scan_workers = AppConfig.get("performance.scan_workers") or get_default_scan_workers()
                 max_scan_workers = min(max(1, max_scan_workers), 32)
-                logger.info(f"QueueScanWorker: scan_workers={max_scan_workers}")
+                logger.info(f"QueueScanWorker: scan_workers={max_scan_workers} (stream mode)")
                 self.progress.emit(
                     scanned, 0,
-                    f"正在并行扫描 {len(subdirs)} 个子目录（已发现 {scanned} 个）..."
+                    f"正在扫描 {len(subdirs)} 个子目录（已发现 {scanned} 个）..."
                 )
-                with ThreadPoolExecutor(max_workers=max_scan_workers) as ex:
-                    futures = {ex.submit(self._scan_dir_into_list, d): d for d in subdirs}
-                    for future in as_completed(futures):
-                        if self._cancelled:
-                            return
-                        try:
-                            paths = future.result()
-                            if paths:
-                                buffer.extend(str(p) for p in paths)
-                                scanned += len(paths)
-                                if len(buffer) >= self.ENQUEUE_BATCH_SIZE:
-                                    flush()
+                for subdir in subdirs:
+                    if self._cancelled:
+                        return
+                    try:
+                        for file_path in self._scan_dir_stream(subdir):
+                            if self._cancelled:
+                                return
+                            buffer.append(str(file_path))
+                            scanned += 1
+                            if len(buffer) >= self.ENQUEUE_BATCH_SIZE:
+                                flush()
+                            if scanned % self.SCAN_PROGRESS_INTERVAL == 0:
                                 self.progress.emit(
                                     scanned, 0,
                                     f"正在扫描目录，已发现 {scanned} 个音频文件..."
                                 )
-                        except Exception as e:
-                            logger.warning(f"Subdir scan failed: {e}")
+                    except Exception as e:
+                        logger.warning(f"Subdir scan failed: {e}")
 
             # 最后入队
             flush()
@@ -996,47 +994,71 @@ class EmptyStateWidget(QWidget):
         self._init_ui()
     
     def _init_ui(self):
-        # 整体居中一个「拖放区域卡片」，更紧凑、现代
         outer_layout = QVBoxLayout(self)
-        outer_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer_layout.setContentsMargins(0, 24, 0, 0)
+        outer_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        outer_layout.setContentsMargins(12, 18, 12, 0)
         outer_layout.setSpacing(0)
 
-        drop_card = QWidget(self)
-        drop_card.setObjectName("libraryEmptyDropCard")
-        drop_layout = QVBoxLayout(drop_card)
+        self._drop_card = CardWidget(self)
+        self._drop_card.setObjectName("libraryEmptyDropCard")
+        self._drop_card.setProperty("dragActive", False)
+        self._drop_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._drop_card.setMaximumWidth(640)
+        self._drop_card.setMinimumHeight(220)
+
+        drop_layout = QVBoxLayout(self._drop_card)
         drop_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        drop_layout.setContentsMargins(28, 18, 28, 18)
+        drop_layout.setContentsMargins(20, 18, 20, 18)
         drop_layout.setSpacing(8)
 
+        icon_wrap = QWidget(self._drop_card)
+        icon_wrap.setObjectName("libraryEmptyDropIconWrap")
+        icon_wrap.setFixedSize(68, 68)
+        icon_layout = QVBoxLayout(icon_wrap)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
+
         icon = IconWidget(FluentIcon.MUSIC_FOLDER)
-        icon.setFixedSize(72, 72)
-        drop_layout.addWidget(icon, alignment=Qt.AlignmentFlag.AlignCenter)
+        icon.setFixedSize(38, 38)
+        icon_layout.addWidget(icon, alignment=Qt.AlignmentFlag.AlignCenter)
+        drop_layout.addWidget(icon_wrap, alignment=Qt.AlignmentFlag.AlignCenter)
 
         title = SubtitleLabel("开始管理您的音效")
-        # 避免全局 QSS 带来的背景/横线，保持干净文字
-        title.setStyleSheet("background: transparent;")
+        title.setObjectName("libraryEmptyDropTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_layout.addWidget(title)
 
-        # 文案：强调两种导入方式 + 语气更简洁
-        desc = CaptionLabel("点击上方“导入”按钮，或将音效文件夹拖放到此处")
-        desc.setStyleSheet("background: transparent; color: rgba(255, 255, 255, 0.72);")
+        desc = CaptionLabel("将音效目录拖放到此处")
+        desc.setObjectName("libraryEmptyDropDesc")
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
         drop_layout.addWidget(desc)
 
-        outer_layout.addWidget(drop_card, 0, Qt.AlignmentFlag.AlignCenter)
+        outer_layout.addWidget(self._drop_card, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self._update_drop_card_width()
 
-        # 样式：更轻的虚线边框 + 细圆角，更贴合顶部工具栏的扁平风格
-        drop_card.setStyleSheet(
-            """
-            QWidget#libraryEmptyDropCard {
-                border: 1px dashed rgba(255, 255, 255, 26%);
-                border-radius: 10px;
-                background-color: rgba(255, 255, 255, 3%);
-            }
-            """
-        )
+    def _update_drop_card_width(self):
+        card = getattr(self, "_drop_card", None)
+        if card is None:
+            return
+        available = max(280, self.width() - 24)
+        target = min(640, available)
+        card.setFixedWidth(target)
+
+    def _set_drag_active(self, active: bool):
+        card = getattr(self, "_drop_card", None)
+        if card is None:
+            return
+        if bool(card.property("dragActive")) == active:
+            return
+        card.setProperty("dragActive", active)
+        card.style().unpolish(card)
+        card.style().polish(card)
+        card.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_drop_card_width()
 
     # ---- 拖放支持：拖入文件夹以导入 ----
     def dragEnterEvent(self, event):
@@ -1049,14 +1071,21 @@ class EmptyStateWidget(QWidget):
                 if local:
                     try:
                         if os.path.isdir(local):
+                            self._set_drag_active(True)
                             event.acceptProposedAction()
                             return
                     except Exception:
                         continue
+        self._set_drag_active(False)
         event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._set_drag_active(False)
+        event.accept()
 
     def dropEvent(self, event):
         """放下文件夹时触发导入信号。"""
+        self._set_drag_active(False)
         mime = event.mimeData()
         folders = []
         if mime.hasUrls():
@@ -1364,6 +1393,7 @@ class LibraryPage(QWidget):
     request_ai_search = Signal(list) # [file_path]
     folder_clicked = Signal(str, list)  # folder_path, file_indices (List[int])
     library_cleared = Signal()
+    realtime_index_status_changed = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1633,36 +1663,44 @@ class LibraryPage(QWidget):
     def _create_toolbar(self) -> QWidget:
         """创建紧凑型工具栏 - 统一单行布局"""
         toolbar_container = QWidget()
+        toolbar_container.setObjectName("libraryToolbarContainer")
         main_layout = QVBoxLayout(toolbar_container)
-        main_layout.setContentsMargins(10, 8, 10, 4)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(10, 8, 10, 6)
+        main_layout.setSpacing(8)
         
         # 第一行：主工具栏
         from PySide6.QtWidgets import QSizePolicy
         
-        toolbar = QWidget()
-        layout = QHBoxLayout(toolbar)
+        self.toolbar_row_main = QWidget()
+        layout = QHBoxLayout(self.toolbar_row_main)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)  # 减小间距
+        layout.setSpacing(6)
         
         # 1. 导入按钮 (Primary Action)
         self.import_btn = PrimaryPushButton(FluentIcon.FOLDER_ADD, "导入")
         self.import_btn.clicked.connect(self._on_import_folder)
-        self.import_btn.setMinimumWidth(80)  # 减小最小宽度
+        self.import_btn.setMinimumWidth(82)
+        self.import_btn.setFixedHeight(34)
         self.import_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.import_btn)
         
         # 清空库按钮
         self.clear_lib_btn = TransparentToolButton(FluentIcon.DELETE)
         self.clear_lib_btn.setToolTip("清空音效库")
-        self.clear_lib_btn.setFixedSize(32, 32)
+        self.clear_lib_btn.setFixedSize(34, 34)
         layout.addWidget(self.clear_lib_btn)
         self.clear_lib_btn.clicked.connect(self._on_clear_library)
+
+        self.clear_lib_btn_mobile = TransparentToolButton(FluentIcon.DELETE)
+        self.clear_lib_btn_mobile.setToolTip("清空音效库")
+        self.clear_lib_btn_mobile.setFixedSize(34, 34)
+        self.clear_lib_btn_mobile.clicked.connect(self._on_clear_library)
         
         # 2. 搜索框 (Expanding) - 作用于左侧整个音效库
         self.search_edit = SearchLineEdit()
         self.search_edit.setPlaceholderText("搜索音效库... (支持: exp* / tags:脚步声 / duration:>10)")
-        self.search_edit.setMinimumWidth(100)  # 增加最小宽度
+        self.search_edit.setMinimumWidth(180)
+        self.search_edit.setFixedHeight(34)
         self.search_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         
         # 连接搜索信号：点击搜索按钮（searchSignal 会传递文本参数）
@@ -1671,28 +1709,32 @@ class LibraryPage(QWidget):
         self.search_edit.textChanged.connect(lambda text: self._on_search())
         # 连接回车键：按下回车也触发搜索（returnPressed 不传递参数）
         self.search_edit.returnPressed.connect(self._on_search)
+
+        layout.addWidget(self.search_edit, 1)
         
-        layout.addWidget(self.search_edit)
-        
-        # 3. 筛选下拉 (Fixed)
-        self.search_field = ComboBox()
-        self.search_field.addItems(["全部", "文件名", "格式", "时长"])
-        self.search_field.setFixedWidth(75)
-        self.search_field.currentIndexChanged.connect(self._on_search)
-        layout.addWidget(self.search_field)
-        
-        main_layout.addWidget(toolbar)
+        main_layout.addWidget(self.toolbar_row_main)
         
         # 第二行：搜索提示（可折叠）
-        self.search_hint = CaptionLabel("💡 高级搜索: exp* (通配符) | tags:脚步声 (标签) | duration:>10 (时长>10秒)")
+        self.search_hint = CaptionLabel("💡 高级搜索: exp* | tags:脚步声 | duration:>10")
         self.search_hint.setTextColor(QColor(150, 150, 150), QColor(150, 150, 150))
         self.search_hint.setVisible(False)  # 默认隐藏
         main_layout.addWidget(self.search_hint)
+
+        self._toolbar_compact_mode = False
         
         # 搜索框获得焦点时显示提示 - 使用 installEventFilter 代替直接覆盖
         self.search_edit.installEventFilter(self)
+        self._apply_toolbar_layout_mode()
 
         return toolbar_container
+
+    def _apply_toolbar_layout_mode(self):
+        # 筛选下拉已移除，保留自适应入口以兼容现有调用
+        self._toolbar_compact_mode = self.width() < 1320
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_toolbar_layout_mode()
 
     def _create_file_list(self) -> QWidget:
         """创建简化的文件列表 - 适用于侧边栏"""
@@ -2032,6 +2074,8 @@ class LibraryPage(QWidget):
         # 使用 Qt 非原生对话框实现多选
         # 这是最稳定的方案，不依赖 pywin32 或 ctypes
         dialog = QFileDialog(self)
+        dialog.setObjectName("folderImportDialog")
+        dialog.setStyleSheet(self._build_import_dialog_qss())
         dialog.setWindowTitle("选择音效文件夹（按住 Ctrl/Shift 可多选）")
         dialog.setFileMode(QFileDialog.FileMode.Directory)
         dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
@@ -2062,10 +2106,103 @@ class LibraryPage(QWidget):
                 logger.info(f"Selected {len(folders)} folder(s): {folders}")
                 self._import_folders_batch(folders)
 
+    def _build_import_dialog_qss(self) -> str:
+        tokens = get_theme_tokens(isDarkTheme())
+        return f"""
+QFileDialog#folderImportDialog,
+QFileDialog#folderImportDialog QWidget,
+QFileDialog#folderImportDialog QFrame {{
+    background-color: {tokens.surface_0};
+    color: {tokens.text_primary};
+}}
+
+QFileDialog#folderImportDialog QTreeView,
+QFileDialog#folderImportDialog QListView {{
+    background-color: {tokens.surface_1};
+    color: {tokens.text_primary};
+    border: 1px solid {tokens.border};
+    selection-background-color: {tokens.card_selected};
+    selection-color: {tokens.text_primary};
+}}
+
+QFileDialog#folderImportDialog QLineEdit,
+QFileDialog#folderImportDialog QComboBox {{
+    background-color: {tokens.surface_2};
+    color: {tokens.text_primary};
+    border: 1px solid {tokens.border};
+    border-radius: 4px;
+    padding: 4px 8px;
+}}
+
+QFileDialog#folderImportDialog QPushButton {{
+    background-color: {tokens.surface_2};
+    color: {tokens.text_primary};
+    border: 1px solid {tokens.border};
+    border-radius: 4px;
+    padding: 4px 10px;
+    min-height: 24px;
+}}
+
+QFileDialog#folderImportDialog QPushButton:hover {{
+    background-color: {tokens.card_hover};
+    border-color: {tokens.border_soft};
+}}
+
+QFileDialog#folderImportDialog QPushButton:pressed {{
+    background-color: {tokens.card_selected};
+}}
+
+QFileDialog#folderImportDialog QToolButton {{
+    background: transparent;
+    color: {tokens.text_secondary};
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 2px;
+}}
+
+QFileDialog#folderImportDialog QToolButton:hover {{
+    background: {tokens.surface_2};
+    border-color: {tokens.border};
+}}
+
+QFileDialog#folderImportDialog QHeaderView::section {{
+    background-color: {tokens.surface_1};
+    color: {tokens.text_secondary};
+    border: none;
+    border-bottom: 1px solid {tokens.border};
+    padding: 5px 8px;
+}}
+
+QFileDialog#folderImportDialog QLabel {{
+    color: {tokens.text_secondary};
+    background: transparent;
+}}
+
+QFileDialog#folderImportDialog QSplitter::handle {{
+    background: {tokens.border};
+}}
+"""
+
     
     def _import_folders_batch(self, folders: list):
         """批量导入多个文件夹"""
-        self._folders_to_import = folders.copy()
+        # 归一化去重：避免同一路径被重复导入（大小写/斜杠差异）
+        def _norm_folder(path_str: str) -> str:
+            try:
+                return os.path.normcase(os.path.normpath(str(Path(path_str).resolve())))
+            except Exception:
+                return os.path.normcase(os.path.normpath(str(path_str)))
+
+        unique_folders = []
+        seen = set()
+        for folder in folders:
+            key = _norm_folder(folder)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_folders.append(folder)
+
+        self._folders_to_import = unique_folders
         self._current_import_index = 0
         self._start_next_folder_import()
 
@@ -3385,7 +3522,6 @@ class LibraryPage(QWidget):
     def _execute_search(self):
         """真正执行搜索逻辑 - 使用后端 SearchEngine"""
         text = self.search_edit.text().strip()
-        field_idx = self.search_field.currentIndex()
         
         # 1. 如果搜索框为空，恢复默认视图（懒加载模式）
         if not text:
@@ -3400,12 +3536,6 @@ class LibraryPage(QWidget):
         try:
             # 构建查询字符串
             query_str = text
-            if field_idx == 1:  # 文件名
-                query_str = f"filename:{text}"
-            elif field_idx == 2:  # 格式
-                query_str = f"format:{text}"
-            elif field_idx == 3:  # 时长
-                query_str = f"duration:{text}"
             
             # 执行搜索
             query = self._search_engine.parse_query(query_str)

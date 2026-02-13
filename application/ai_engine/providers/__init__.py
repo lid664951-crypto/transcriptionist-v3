@@ -6,8 +6,11 @@ AI Service Providers
 
 from .openai_compatible import OpenAICompatibleService
 from .deepseek import DeepSeekService
+from .kling_audio import KlingAudioService, KlingAudioError
 
 __all__ = [
     'OpenAICompatibleService',
     'DeepSeekService',
+    'KlingAudioService',
+    'KlingAudioError',
 ]

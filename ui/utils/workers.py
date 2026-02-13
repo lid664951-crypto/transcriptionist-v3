@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Optional, Any, Callable
 
@@ -191,11 +192,12 @@ class DatabaseLoadWorker(BaseWorker):
             self.error.emit(str(e))
 
 
-def _build_translation_prompt(source_lang: str, target_lang: str, template_id: str) -> str:
+def _build_translation_prompt(source_lang: str, target_lang: str, template_id: str, is_folder: bool = False) -> str:
     """构建翻译提示词（统一入口）。"""
     from transcriptionist_v3.application.ai_engine.providers.openai_compatible import (
         BASIC_TRANSLATION_PROMPT,
         EXPERT_UCS_PROMPT,
+        FOLDER_TRANSLATION_PROMPT,
         LANGUAGE_ENFORCEMENT_TEMPLATES,
         TARGET_LANG_EXAMPLES,
     )
@@ -230,7 +232,9 @@ def _build_translation_prompt(source_lang: str, target_lang: str, template_id: s
     language_enforcement = LANGUAGE_ENFORCEMENT_TEMPLATES.get(target, "")
 
     # 3. 选择并构建最终提示词
-    if template_id == "ucs_standard":
+    if is_folder:
+        prompt = FOLDER_TRANSLATION_PROMPT
+    elif template_id == "ucs_standard":
         prompt = EXPERT_UCS_PROMPT
     else:
         prompt = BASIC_TRANSLATION_PROMPT
@@ -956,6 +960,7 @@ class IndexingJobWorker(BaseWorker):
                     total = base_query.count()
                 except Exception:
                     total = int(self.selection.get("count", 0) or 0)
+                total = max(0, int(total or 0))
                 start_job(session, job, total=total)
                 session.commit()
 
@@ -1049,7 +1054,6 @@ class IndexingJobWorker(BaseWorker):
                             checkpoint={"last_id": last_id},
                         )
 
-                total = int(self.selection.get("count", 0) or 0)
                 self.progress.emit(processed, total, f"已处理 {processed}")
 
             with session_scope() as session:
@@ -1117,6 +1121,8 @@ class ClearTagsJobWorker(BaseWorker):
                     total = int(self.selection.get("count", 0) or 0)
                 start_job(session, job, total=total)
                 session.commit()
+
+            self.progress.emit(0, int(total or 0), "正在准备翻译任务...")
 
             processed = 0
             last_id = 0
@@ -1204,8 +1210,10 @@ class TranslateJobWorker(BaseWorker):
 
     def run(self) -> None:
         import asyncio
+        from collections import defaultdict
         from pathlib import Path
         from transcriptionist_v3.core.config import AppConfig
+        from transcriptionist_v3.runtime.runtime_config import get_data_dir
         from transcriptionist_v3.infrastructure.database.connection import session_scope
         from transcriptionist_v3.infrastructure.database.models import AudioFile, Job
         from transcriptionist_v3.application.ai_jobs.selection import apply_selection_filters
@@ -1223,6 +1231,7 @@ class TranslateJobWorker(BaseWorker):
             mark_job_done,
         )
         from transcriptionist_v3.application.naming_manager.cleaning import CleaningManager
+        from transcriptionist_v3.application.naming_manager.templates import TemplateManager, NamingTemplate
         from transcriptionist_v3.ui.utils.hierarchical_translate_worker import sanitize_filename
         from transcriptionist_v3.application.ai_engine.base import AIServiceConfig
         from transcriptionist_v3.application.ai_engine.providers.openai_compatible import OpenAICompatibleService
@@ -1244,6 +1253,7 @@ class TranslateJobWorker(BaseWorker):
 
         loop = None
         service = None
+        folder_translations = []
 
         try:
             loop = asyncio.new_event_loop()
@@ -1274,6 +1284,24 @@ class TranslateJobWorker(BaseWorker):
                 )
                 service = OpenAICompatibleService(service_config)
 
+            cleaning_manager = CleaningManager.instance()
+            try:
+                cleaning_manager.load()
+            except Exception:
+                pass
+
+            template_manager = TemplateManager.instance(str(get_data_dir()))
+            template_pattern = template_manager.get_active_pattern()
+            template_obj = template_manager.get_template(self.template_id) or NamingTemplate(
+                "job-template",
+                "JobTemplate",
+                template_pattern,
+            )
+            total = 0
+            folder_file_index = defaultdict(int)
+            folder_folder_index = defaultdict(int)
+            self.progress.emit(0, int(total or 0), "正在准备翻译任务...")
+
             with session_scope() as session:
                 job = session.get(Job, self.job_id) if self.job_id else None
                 if job is None:
@@ -1299,6 +1327,8 @@ class TranslateJobWorker(BaseWorker):
                     total = int(self.selection.get("count", 0) or 0)
                 start_job(session, job, total=total)
                 session.commit()
+
+            self.progress.emit(0, int(total or 0), "正在加载并翻译...")
 
             cleaning_manager = CleaningManager.instance()
             processed = 0
@@ -1339,8 +1369,23 @@ class TranslateJobWorker(BaseWorker):
                 if not cleaned_names:
                     break
 
+                def file_progress_cb(current_batch: int, total_batch: int, message: str):
+                    try:
+                        current_batch = int(current_batch or 0)
+                        global_current = int(processed) + max(0, current_batch)
+                        if total and global_current > int(total):
+                            global_current = int(total)
+                        self.progress.emit(global_current, int(total or 0), message or f"翻译中 {global_current}/{int(total or 0)}")
+                    except Exception:
+                        pass
+
                 result = loop.run_until_complete(
-                    service.translate_batch(cleaned_names, self.source_lang, self.target_lang)
+                    service.translate_batch(
+                        cleaned_names,
+                        self.source_lang,
+                        self.target_lang,
+                        progress_callback=file_progress_cb,
+                    )
                 )
 
                 if not result.success:
@@ -1370,7 +1415,36 @@ class TranslateJobWorker(BaseWorker):
                                 synchronize_session=False,
                             )
                             continue
-                        final_name = f"{translated}{suffix}"
+                        parent_path = str(Path(row.file_path).parent)
+                        folder_file_index[parent_path] += 1
+                        local_index = int(folder_file_index[parent_path])
+
+                        ucs_components = {
+                            "category": getattr(translations[idx], "category", "") or "",
+                            "subcategory": getattr(translations[idx], "subcategory", "") or "",
+                            "descriptor": getattr(translations[idx], "descriptor", "") or "",
+                            "variation": getattr(translations[idx], "variation", "") or "",
+                        }
+                        context = template_manager.create_context(
+                            str(row.filename or Path(row.file_path).name),
+                            ucs_components=ucs_components,
+                            index=local_index,
+                            translated=translated,
+                        )
+
+                        formatted_stem = ""
+                        try:
+                            formatted_stem = str(template_obj.format(context) or "").strip()
+                        except Exception:
+                            formatted_stem = ""
+                        if not formatted_stem:
+                            formatted_stem = translated
+
+                        formatted_stem = sanitize_filename(formatted_stem)
+                        if not formatted_stem:
+                            formatted_stem = translated
+
+                        final_name = f"{formatted_stem}{suffix}"
                         session.query(AudioFile).filter_by(id=row.id).update(
                             {"translated_name": final_name, "translation_status": FILE_STATUS_DONE},
                             synchronize_session=False,
@@ -1390,15 +1464,133 @@ class TranslateJobWorker(BaseWorker):
                             checkpoint={"last_id": last_id},
                         )
 
-                total = int(self.selection.get("count", 0) or 0)
-                self.progress.emit(processed, total, f"??? {processed}")
+                self.progress.emit(processed, total, f"已翻译 {processed}/{total}")
+
+            try:
+                selection_mode = str((self.selection or {}).get("mode") or "none")
+                selected_folders = [
+                    str(folder).strip()
+                    for folder in ((self.selection or {}).get("folders") or [])
+                    if str(folder).strip()
+                ]
+
+                if not selected_folders:
+                    if selection_mode == "files":
+                        for file_path in ((self.selection or {}).get("files") or []):
+                            file_path = str(file_path or "").strip()
+                            if file_path:
+                                selected_folders.append(str(Path(file_path).parent))
+                    elif selection_mode in {"all", "folders"}:
+                        with session_scope() as session:
+                            folder_query = session.query(AudioFile.file_path)
+                            folder_query = apply_selection_filters(folder_query, self.selection)
+                            for row in folder_query.all():
+                                if row.file_path:
+                                    selected_folders.append(str(Path(str(row.file_path)).parent))
+
+                if selected_folders:
+                    selected_folders = list(dict.fromkeys(selected_folders))
+
+                if selected_folders and selection_mode in {"folders", "all", "files"}:
+                    self.progress.emit(int(total or 0), int(total or 0), "文件翻译完成，正在翻译文件夹...")
+                    folder_names_cleaned = []
+                    for folder_path in selected_folders:
+                        folder_name = Path(folder_path).name
+                        cleaned_name = cleaning_manager.apply_all(folder_name)
+                        folder_names_cleaned.append(cleaned_name or folder_name)
+
+                    folder_result = None
+                    if use_onnx:
+                        folder_result = loop.run_until_complete(
+                            service.translate_batch(
+                                folder_names_cleaned,
+                                self.source_lang,
+                                self.target_lang,
+                                progress_callback=None,
+                            )
+                        )
+                    else:
+                        folder_prompt = _build_translation_prompt(
+                            self.source_lang,
+                            self.target_lang,
+                            self.template_id,
+                            is_folder=True,
+                        )
+                        folder_service_config = AIServiceConfig(
+                            provider_id=self.model_config.get("provider", ""),
+                            api_key=self.api_key,
+                            base_url=self.model_config.get("base_url", ""),
+                            model_name=self.model_config.get("model", ""),
+                            system_prompt=folder_prompt,
+                            timeout=180,
+                            max_tokens=4096,
+                            temperature=0.3,
+                        )
+                        folder_service = OpenAICompatibleService(folder_service_config)
+                        try:
+                            folder_result = loop.run_until_complete(
+                                folder_service.translate_batch(
+                                    folder_names_cleaned,
+                                    self.source_lang,
+                                    self.target_lang,
+                                    progress_callback=None,
+                                )
+                            )
+                        finally:
+                            try:
+                                loop.run_until_complete(folder_service.cleanup())
+                            except Exception:
+                                pass
+
+                    if folder_result and folder_result.success:
+                        translated_rows = folder_result.data or []
+                        for idx, folder_path in enumerate(selected_folders):
+                            translated_name = ""
+                            if idx < len(translated_rows):
+                                translated_name = str(getattr(translated_rows[idx], "translated", "") or "").strip()
+                            if not translated_name:
+                                translated_name = Path(folder_path).name
+                            translated_name = sanitize_filename(translated_name)
+                            if not translated_name:
+                                translated_name = Path(folder_path).name
+
+                            folder_parent = str(Path(folder_path).parent)
+                            folder_folder_index[folder_parent] += 1
+                            folder_local_index = int(folder_folder_index[folder_parent])
+                            folder_context = template_manager.create_context(
+                                Path(folder_path).name,
+                                ucs_components=None,
+                                index=folder_local_index,
+                                translated=translated_name,
+                            )
+                            try:
+                                translated_name = str(template_obj.format(folder_context) or "").strip()
+                            except Exception:
+                                pass
+                            translated_name = sanitize_filename(translated_name)
+                            if not translated_name:
+                                translated_name = Path(folder_path).name
+
+                            folder_translations.append({
+                                "old_path": folder_path,
+                                "translated_name": translated_name,
+                            })
+            except Exception as folder_err:
+                logger.warning(f"Folder translation skipped due to error: {folder_err}")
 
             with session_scope() as session:
                 job = session.get(Job, self.job_id)
                 if job:
                     mark_job_done(session, job)
 
-            self.finished.emit({"job_id": self.job_id, "processed": processed, "failed": failed})
+            self.finished.emit(
+                {
+                    "job_id": self.job_id,
+                    "processed": processed,
+                    "failed": failed,
+                    "folder_translations": folder_translations,
+                }
+            )
 
         except Exception as e:
             logger.error(f"Translate job error: {e}", exc_info=True)
@@ -1422,22 +1614,103 @@ class TranslateJobWorker(BaseWorker):
 
 class ApplyTranslationJobWorker(BaseWorker):
     """任务化应用翻译结果：按 selection 分批重命名并写库。"""
+    RENAME_MAX_RETRIES = 3
+    RENAME_RETRY_BASE_DELAY = 0.2
+
     def __init__(
         self,
         selection: dict,
         batch_size: int = 200,
+        folder_translations: Optional[list[dict]] = None,
         job_id: Optional[int] = None,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
         self.selection = selection or {}
         self.batch_size = max(1, int(batch_size))
+        self.folder_translations = list(folder_translations or [])
         self.job_id = job_id
+
+    @staticmethod
+    def _rename_one(old_path: Path, new_name: str):
+        from transcriptionist_v3.application.library_manager.renaming_service import RenamingService
+        try:
+            return RenamingService.rename_sync(str(old_path), new_name)
+        except Exception as e:
+            return False, str(e), str(old_path)
+
+    @classmethod
+    def _rename_with_retry(cls, old_path: Path, new_name: str):
+        import time
+
+        last_msg = ""
+        last_path = str(old_path)
+        for attempt in range(cls.RENAME_MAX_RETRIES):
+            success, msg, new_path = cls._rename_one(old_path, new_name)
+            if success:
+                return True, msg, new_path
+
+            last_msg = str(msg or "")
+            last_path = str(new_path or old_path)
+            normalized = last_msg.lower()
+            transient = any(k in normalized for k in ["permission", "拒绝", "占用", "busy", "access"])
+            if transient and attempt < cls.RENAME_MAX_RETRIES - 1:
+                time.sleep(cls.RENAME_RETRY_BASE_DELAY * (attempt + 1))
+                continue
+            return False, last_msg, last_path
+
+        return False, last_msg, last_path
+
+    @staticmethod
+    def _group_tasks_by_parent(tasks):
+        grouped = {}
+        for file_id, old_path, new_name in tasks:
+            parent = str(old_path.parent)
+            grouped.setdefault(parent, []).append((file_id, old_path, new_name))
+        groups = []
+        for _, group_tasks in grouped.items():
+            group_tasks.sort(key=lambda x: x[0])
+            groups.append(group_tasks)
+        # 大目录优先，尽快释放“重任务”
+        groups.sort(key=lambda g: len(g), reverse=True)
+        return groups
+
+    def _process_task_group(self, group_tasks):
+        from pathlib import Path as _Path
+
+        processed_inc = 0
+        failed_inc = 0
+        group_last_id = 0
+        done_count = 0
+        history_rows = []
+        for file_id, old_path, new_name in group_tasks:
+            if self.is_cancelled:
+                break
+            group_last_id = max(group_last_id, int(file_id))
+            success, _, new_path = self._rename_with_retry(old_path, new_name)
+            if success:
+                processed_inc += 1
+                old_path_str = str(old_path)
+                new_path_str = str(new_path or "")
+                if new_path_str and new_path_str != old_path_str:
+                    history_rows.append(
+                        (
+                            int(file_id),
+                            old_path_str,
+                            new_path_str,
+                            old_path.name,
+                            _Path(new_path_str).name,
+                        )
+                    )
+            else:
+                failed_inc += 1
+            done_count += 1
+        return processed_inc, failed_inc, group_last_id, done_count, history_rows
 
     def run(self) -> None:
         from pathlib import Path
         from transcriptionist_v3.infrastructure.database.connection import session_scope
-        from transcriptionist_v3.infrastructure.database.models import AudioFile, Job
+        from transcriptionist_v3.infrastructure.database.models import AudioFile, Job, RenameHistory
         from transcriptionist_v3.application.ai_jobs.selection import apply_selection_filters
         from transcriptionist_v3.application.ai_jobs.job_constants import (
             JOB_TYPE_APPLY_TRANSLATION,
@@ -1450,7 +1723,8 @@ class ApplyTranslationJobWorker(BaseWorker):
             mark_job_failed,
             mark_job_done,
         )
-        from transcriptionist_v3.application.library_manager.renaming_service import RenamingService
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import os
 
         try:
             with session_scope() as session:
@@ -1463,10 +1737,10 @@ class ApplyTranslationJobWorker(BaseWorker):
                 base_query = apply_selection_filters(base_query, self.selection)
                 base_query = base_query.filter(AudioFile.translated_name.isnot(None))
                 try:
-                    total = base_query.count()
+                    job_total = base_query.count()
                 except Exception:
-                    total = int(self.selection.get("count", 0) or 0)
-                start_job(session, job, total=total)
+                    job_total = int(self.selection.get("count", 0) or 0)
+                start_job(session, job, total=job_total)
                 session.commit()
 
             processed = 0
@@ -1496,9 +1770,9 @@ class ApplyTranslationJobWorker(BaseWorker):
                 if not rows:
                     break
 
+                history_rows_batch = []
+                tasks = []
                 for row in rows:
-                    if self.is_cancelled:
-                        break
                     old_path = Path(row.file_path)
                     new_name = (row.translated_name or "").strip()
                     if not new_name:
@@ -1509,18 +1783,73 @@ class ApplyTranslationJobWorker(BaseWorker):
                         processed += 1
                         last_id = row.id
                         continue
-                    try:
-                        success, _, _ = RenamingService.rename_sync(str(old_path), new_name)
-                        if success:
-                            processed += 1
-                        else:
-                            failed += 1
-                    except Exception:
-                        failed += 1
-                    last_id = row.id
+                    tasks.append((row.id, old_path, new_name))
+
+                if tasks:
+                    task_groups = self._group_tasks_by_parent(tasks)
+                    max_workers = min(len(task_groups), min(8, max(1, (os.cpu_count() or 4) // 2)))
+                    max_workers = max(1, max_workers)
+
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        future_map = {
+                            pool.submit(self._process_task_group, group): len(group)
+                            for group in task_groups
+                        }
+                        for future in as_completed(future_map):
+                            if self.is_cancelled:
+                                break
+                            try:
+                                processed_inc, failed_inc, group_last_id, _, group_history_rows = future.result()
+                                processed += int(processed_inc)
+                                failed += int(failed_inc)
+                                last_id = max(last_id, int(group_last_id))
+                                if group_history_rows:
+                                    history_rows_batch.extend(group_history_rows)
+                            except Exception:
+                                failed += int(future_map.get(future, 0) or 0)
+
+                            # 细粒度进度，降低“假死”感
+                            self.progress.emit(processed, int(job_total or 0), f"已应用 {processed}")
 
                 with session_scope() as session:
                     job = session.get(Job, self.job_id)
+                    if history_rows_batch:
+                        session.bulk_save_objects(
+                            [
+                                RenameHistory(
+                                    audio_file_id=file_id,
+                                    old_path=old_path,
+                                    new_path=new_path,
+                                    old_filename=old_filename,
+                                    new_filename=new_filename,
+                                )
+                                for file_id, old_path, new_path, old_filename, new_filename in history_rows_batch
+                            ]
+                        )
+                        latest_rows_by_id = {}
+                        for file_id, old_path, new_path, old_filename, new_filename in history_rows_batch:
+                            latest_rows_by_id[int(file_id)] = (
+                                str(old_path),
+                                str(new_path),
+                                str(old_filename),
+                                str(new_filename),
+                            )
+
+                        for file_id, row_data in latest_rows_by_id.items():
+                            _, new_path, old_filename, new_filename = row_data
+                            db_file = session.get(AudioFile, file_id)
+                            if db_file is None:
+                                continue
+
+                            prev_filename = str(db_file.filename or "").strip()
+                            prev_original = str(db_file.original_filename or "").strip()
+
+                            db_file.file_path = new_path
+                            db_file.filename = new_filename
+                            db_file.translated_name = new_filename
+
+                            if (not prev_original) or (prev_original == prev_filename) or (prev_original == new_filename):
+                                db_file.original_filename = str(old_filename or prev_filename or new_filename)
                     if job:
                         update_job_progress(
                             session,
@@ -1530,15 +1859,127 @@ class ApplyTranslationJobWorker(BaseWorker):
                             checkpoint={"last_id": last_id},
                         )
 
-                total = int(self.selection.get("count", 0) or 0)
-                self.progress.emit(processed, total, f"已应用 {processed}")
+                self.progress.emit(processed, int(job_total or 0), f"已应用 {processed}")
+
+            folder_processed = 0
+            folder_failed = 0
+            if self.folder_translations:
+                folder_rows = []
+                for row in self.folder_translations:
+                    old_path_str = str((row or {}).get("old_path") or "").strip()
+                    translated_name = str((row or {}).get("translated_name") or "").strip()
+                    if old_path_str and translated_name:
+                        folder_rows.append((old_path_str, translated_name))
+
+                dedup = {}
+                for old_path_str, translated_name in folder_rows:
+                    dedup[old_path_str] = translated_name
+
+                for old_path_str, translated_name in sorted(
+                    dedup.items(),
+                    key=lambda item: len(Path(item[0]).parts),
+                    reverse=True,
+                ):
+                    if self.is_cancelled:
+                        break
+
+                    old_folder_path = Path(old_path_str)
+                    if not old_folder_path.exists() or translated_name == old_folder_path.name:
+                        continue
+
+                    success, _, new_folder_path = self._rename_with_retry(old_folder_path, translated_name)
+                    if not success:
+                        folder_failed += 1
+                        continue
+
+                    new_folder_path_str = str(new_folder_path or "").strip()
+                    if not new_folder_path_str:
+                        folder_failed += 1
+                        continue
+
+                    with session_scope() as session:
+                        old_prefix = old_path_str
+                        if not old_prefix.endswith(os.sep):
+                            old_prefix = old_prefix + os.sep
+                        old_prefix_alt = old_prefix.replace("\\", "/")
+
+                        rows = (
+                            session.query(AudioFile.id, AudioFile.file_path, AudioFile.filename)
+                            .filter(AudioFile.file_path.startswith(old_prefix))
+                            .all()
+                        )
+                        if not rows and old_prefix_alt != old_prefix:
+                            rows = (
+                                session.query(AudioFile.id, AudioFile.file_path, AudioFile.filename)
+                                .filter(AudioFile.file_path.startswith(old_prefix_alt))
+                                .all()
+                            )
+
+                        history_rows = []
+                        for file_id, file_path, filename in rows:
+                            old_file_path = str(file_path or "")
+                            if not old_file_path:
+                                continue
+                            if old_file_path.startswith(old_prefix):
+                                new_file_path = old_file_path.replace(old_prefix, new_folder_path_str + os.sep, 1)
+                            elif old_file_path.startswith(old_prefix_alt):
+                                new_file_path = old_file_path.replace(old_prefix_alt, new_folder_path_str.replace("\\", "/") + "/", 1)
+                            else:
+                                continue
+
+                            db_file = session.get(AudioFile, int(file_id))
+                            if db_file is None:
+                                continue
+                            new_filename = Path(new_file_path).name
+                            db_file.file_path = new_file_path
+                            db_file.filename = new_filename
+                            db_file.translated_name = new_filename
+
+                            prior_history = (
+                                session.query(RenameHistory.old_path, RenameHistory.old_filename)
+                                .filter(
+                                    RenameHistory.audio_file_id == int(file_id),
+                                    RenameHistory.new_path == old_file_path,
+                                )
+                                .order_by(RenameHistory.id.desc())
+                                .first()
+                            )
+                            history_old_path = str(prior_history[0]) if prior_history and prior_history[0] else old_file_path
+                            history_old_filename = (
+                                str(prior_history[1])
+                                if prior_history and prior_history[1]
+                                else str(filename or Path(old_file_path).name)
+                            )
+
+                            history_rows.append(
+                                RenameHistory(
+                                    audio_file_id=int(file_id),
+                                    old_path=history_old_path,
+                                    new_path=new_file_path,
+                                    old_filename=history_old_filename,
+                                    new_filename=new_filename,
+                                )
+                            )
+
+                        if history_rows:
+                            session.bulk_save_objects(history_rows)
+
+                    folder_processed += 1
 
             with session_scope() as session:
                 job = session.get(Job, self.job_id)
                 if job:
                     mark_job_done(session, job)
 
-            self.finished.emit({"job_id": self.job_id, "processed": processed, "failed": failed})
+            self.finished.emit(
+                {
+                    "job_id": self.job_id,
+                    "processed": processed,
+                    "failed": failed,
+                    "folder_processed": folder_processed,
+                    "folder_failed": folder_failed,
+                }
+            )
 
         except Exception as e:
             logger.error(f"Apply translation job error: {e}", exc_info=True)
@@ -2380,6 +2821,122 @@ class HyMT15DownloadWorker(BaseWorker):
         except Exception as e:
             logger.error(f"HY-MT1.5 download failed: {e}")
             if not self.is_cancelled:
+                self.error.emit(str(e))
+
+
+class KlingTextToAudioWorker(BaseWorker):
+    """可灵文本生成音效后台 Worker。"""
+
+    def __init__(
+        self,
+        prompt: str,
+        duration: float,
+        preferred_format: str,
+        provider_config: dict[str, Any],
+        output_dir: Optional[Path] = None,
+        timeout_seconds: float = 300.0,
+        parent: Optional[QObject] = None,
+    ):
+        super().__init__(parent)
+        self.prompt = (prompt or "").strip()
+        self.duration = float(duration)
+        self.preferred_format = (preferred_format or "wav").strip().lower()
+        self.provider_config = provider_config or {}
+        self.output_dir = output_dir
+        self.timeout_seconds = float(timeout_seconds)
+
+    def run(self) -> None:
+        try:
+            from transcriptionist_v3.application.ai_engine.providers.kling_audio import (
+                KlingAudioError,
+                KlingAudioService,
+            )
+            from transcriptionist_v3.runtime.runtime_config import get_data_dir
+
+            access_key = (self.provider_config.get("access_key") or "").strip()
+            secret_key = (self.provider_config.get("secret_key") or "").strip()
+            base_url = (self.provider_config.get("base_url") or "").strip()
+            callback_url = (self.provider_config.get("callback_url") or "").strip()
+            poll_interval = float(self.provider_config.get("poll_interval") or 1.5)
+
+            if not (access_key and secret_key):
+                raise KlingAudioError("未配置可灵鉴权信息，请先在设置页填写 Access Key 和 Secret Key")
+
+            service = KlingAudioService(
+                access_key=access_key,
+                secret_key=secret_key,
+                base_url=base_url or None,
+            )
+            self.progress.emit(5, 100, "正在提交可灵任务...")
+
+            external_task_id = f"transcriptionist_{uuid.uuid4().hex[:16]}"
+            submit_resp = service.submit_text_to_audio(
+                prompt=self.prompt,
+                duration=self.duration,
+                external_task_id=external_task_id,
+                callback_url=callback_url or None,
+            )
+            task_id = service.extract_task_id(submit_resp)
+            self.progress.emit(20, 100, f"任务已提交（{task_id}）")
+
+            def _on_poll(state):
+                msg = state.message or "任务处理中..."
+                if state.status == "submitted":
+                    self.progress.emit(35, 100, msg)
+                elif state.status == "processing":
+                    self.progress.emit(65, 100, msg)
+                elif state.status == "succeed":
+                    self.progress.emit(90, 100, "任务完成，准备下载...")
+                elif state.status == "failed":
+                    self.progress.emit(90, 100, msg or "任务失败")
+
+            state = service.wait_until_done(
+                task_id=task_id,
+                poll_interval=poll_interval,
+                timeout_seconds=self.timeout_seconds,
+                on_poll=_on_poll,
+                should_cancel=lambda: self.is_cancelled,
+            )
+
+            if state.status == "failed":
+                raise KlingAudioError(state.message or "可灵任务失败")
+
+            if self.is_cancelled:
+                return
+
+            audio_url, fmt = service.pick_audio_url(state.raw, self.preferred_format)
+
+            if self.output_dir is None:
+                output_dir = get_data_dir() / "downloads" / "generated_audio"
+            else:
+                output_dir = self.output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"kling_sfx_{timestamp}.{fmt}"
+            local_path = output_dir / filename
+
+            self.progress.emit(95, 100, "正在下载生成结果...")
+            service.download_audio(audio_url, str(local_path))
+
+            if self.is_cancelled:
+                return
+
+            self.progress.emit(100, 100, "生成完成")
+            self.finished.emit(
+                {
+                    "task_id": task_id,
+                    "status": state.status,
+                    "local_path": str(local_path),
+                    "audio_url": audio_url,
+                    "format": fmt,
+                    "duration": self.duration,
+                }
+            )
+
+        except Exception as e:
+            if not self.is_cancelled:
+                logger.error(f"Kling text-to-audio failed: {e}")
                 self.error.emit(str(e))
 
 

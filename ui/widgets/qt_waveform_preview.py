@@ -20,10 +20,19 @@ from pathlib import Path
 from typing import List, Optional, Callable
 
 from PySide6.QtCore import Qt, QRectF, QThread, QObject, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QBrush
+from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QLinearGradient
 from PySide6.QtWidgets import QWidget
+from qfluentwidgets import isDarkTheme
+
+from transcriptionist_v3.ui.themes.theme_tokens import get_theme_tokens
 
 logger = logging.getLogger(__name__)
+
+
+def _with_alpha(color_hex: str, alpha: float) -> QColor:
+    color = QColor(color_hex)
+    color.setAlphaF(max(0.0, min(1.0, float(alpha))))
+    return color
 
 try:
     import numpy as np  # type: ignore
@@ -53,10 +62,45 @@ class WaveformData:
         if not NUMPY_AVAILABLE:
             return None
 
-        # 仅支持 .wav，其他格式一律跳过，避免不稳定编解码器导致闪退
-        if file_path.suffix.lower() != ".wav":
-            logger.info(f"WaveformPreview: skip non-WAV file for waveform preview: {file_path}")
-            return None
+        def _build_peaks_from_samples(samples, sample_rate: int) -> Optional["WaveformData"]:
+            if samples is None or sample_rate <= 0:
+                return None
+            if len(samples) == 0:
+                return None
+
+            duration_ms = int(len(samples) / sample_rate * 1000)
+            if duration_ms <= 0:
+                return None
+
+            chunk_size = max(1, len(samples) // num_samples)
+            peaks: List[float] = []
+            for i in range(0, len(samples), chunk_size):
+                chunk = samples[i : i + chunk_size]
+                if len(chunk) > 0:
+                    peak = float(np.abs(chunk).max())
+                    peaks.append(peak)
+
+            max_peak = max(peaks) if peaks else 1.0
+            if max_peak > 0:
+                peaks = [p / max_peak for p in peaks]
+
+            return cls(peaks[:num_samples], duration_ms)
+
+        # 优先尝试 soundfile（支持更多格式）；失败后回退 wave（WAV）
+        try:
+            import soundfile as sf  # type: ignore
+
+            data, sample_rate = sf.read(str(file_path), dtype="float32", always_2d=False)
+            if data is not None:
+                if getattr(data, "ndim", 1) > 1:
+                    samples = data.mean(axis=1)
+                else:
+                    samples = data
+                built = _build_peaks_from_samples(samples, int(sample_rate))
+                if built is not None:
+                    return built
+        except Exception:
+            pass
 
         try:
             # 仅使用标准库 wave，避免依赖外部解码器
@@ -72,7 +116,6 @@ class WaveformData:
                 if framerate <= 0 or n_frames <= 0:
                     return None
 
-                duration_ms = int(n_frames / framerate * 1000)
                 raw_data = wav.readframes(n_frames)
 
                 if sample_width == 1:
@@ -88,22 +131,7 @@ class WaveformData:
                 if n_channels > 1:
                     samples = samples.reshape(-1, n_channels).mean(axis=1)
 
-                if len(samples) == 0:
-                    return None
-
-                chunk_size = max(1, len(samples) // num_samples)
-                peaks: List[float] = []
-                for i in range(0, len(samples), chunk_size):
-                    chunk = samples[i : i + chunk_size]
-                    if len(chunk) > 0:
-                        peak = float(np.abs(chunk).max())
-                        peaks.append(peak)
-
-                max_peak = max(peaks) if peaks else 1.0
-                if max_peak > 0:
-                    peaks = [p / max_peak for p in peaks]
-
-                return cls(peaks[:num_samples], duration_ms)
+                return _build_peaks_from_samples(samples, int(framerate))
         except Exception as e:
             logger.error(f"WaveformPreview: failed to extract waveform from {file_path}: {e}")
             return None
@@ -173,6 +201,7 @@ class WaveformPreviewWidget(QWidget):
         self.setMaximumHeight(96)
         self.setMouseTracking(True)
         self._hover_x: int = -1
+        self._is_dragging: bool = False
 
     # ---------- 公共 API ----------
     def load_file(self, file_path: str) -> None:
@@ -234,11 +263,7 @@ class WaveformPreviewWidget(QWidget):
     
     def _on_load_finished(self, data: Optional[WaveformData]) -> None:
         """后台加载完成回调."""
-        # 检查是否已经被取消（文件已切换）
-        if self._load_thread is None or not self._load_thread.isRunning():
-            # 加载已被取消，忽略结果
-            return
-        
+        # 使用 request_id 做 latest-wins；不依赖线程 running 状态，避免竞态导致丢结果
         self._loading = False
         if data:
             self._waveform = data
@@ -327,25 +352,31 @@ class WaveformPreviewWidget(QWidget):
 
     # ---------- 绘制逻辑 ----------
     def paintEvent(self, event) -> None:  # type: ignore[override]
-        """自绘波形条（更扁平、贴合整体深色工作台的风格）。"""
+        """自绘波形条（使用主题 token，避免硬编码颜色）。"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # 使用更扁平的风格：不再画大卡片，只在中间区域画波形
+        tokens = get_theme_tokens(isDarkTheme())
+
         rect = self.rect().adjusted(16, 6, -16, -6)
         center_y = rect.center().y()
 
-        # 细中线，颜色更柔和，避免太扎眼
-        painter.setPen(QPen(QColor(70, 70, 70, 120), 1))
+        # 轨道背景（跟随主题）
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(_with_alpha(tokens.surface_1, 0.88 if isDarkTheme() else 0.96))
+        painter.drawRoundedRect(rect, 8, 8)
+
+        # 中线
+        painter.setPen(QPen(_with_alpha(tokens.border_soft, 0.55), 1))
         painter.drawLine(rect.left(), center_y, rect.right(), center_y)
 
         if self._loading:
-            painter.setPen(QColor(220, 220, 220))
+            painter.setPen(QColor(tokens.text_secondary))
             painter.drawText(rect, Qt.AlignCenter, "加载波形中…")
             return
 
         if not self._waveform or not self._waveform.peaks:
-            painter.setPen(QColor(140, 140, 140))
+            painter.setPen(QColor(tokens.text_muted))
             painter.drawText(rect, Qt.AlignCenter, "选择音效以预览波形")
             return
 
@@ -371,34 +402,33 @@ class WaveformPreviewWidget(QWidget):
             rect_bar = QRectF(x, y, w, h * 2.0)
 
             if x + w < progress_x:
-                # 已播放部分：使用与整体主题接近的 Fluent 蓝
-                painter.setBrush(QColor(51, 153, 255))  # #3399FF
+                painter.setBrush(_with_alpha(tokens.accent, 0.95))
             else:
-                # 未播放部分：稍暗的灰，减少干扰
-                painter.setBrush(QColor(70, 70, 70))
+                painter.setBrush(_with_alpha(tokens.border_soft, 0.58 if isDarkTheme() else 0.72))
 
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(rect_bar, 2.0, 2.0)
 
         # 播放头
         if self._duration_ms > 0:
-            # 播放头主体
-            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            playhead_color = QColor(tokens.text_primary)
+            painter.setPen(QPen(playhead_color, 2))
             painter.drawLine(progress_x, bar_area.top(), progress_x, bar_area.bottom())
 
-            # 播放头顶部小圆点
-            painter.setBrush(QColor(255, 255, 255))
+            painter.setBrush(playhead_color)
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(QRectF(progress_x - 3, bar_area.top() - 5, 6, 6))
 
         # 悬停指示线
         if self._hover_x >= bar_area.left() and self._hover_x <= bar_area.right():
-            painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+            painter.setPen(QPen(_with_alpha(tokens.text_muted, 0.45), 1))
             painter.drawLine(self._hover_x, bar_area.top(), self._hover_x, bar_area.bottom())
 
     # ---------- 交互 ----------
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         self._hover_x = event.position().x()
+        if self._is_dragging:
+            self._seek_to_x(event.position().x())
         self.update()
 
     def leaveEvent(self, event) -> None:  # type: ignore[override]
@@ -406,6 +436,22 @@ class WaveformPreviewWidget(QWidget):
         self.update()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if not self._seek_callback or self._duration_ms <= 0:
+            return
+
+        self._is_dragging = True
+        self._seek_to_x(event.position().x())
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_dragging = False
+            self._hover_x = event.position().x()
+            self.update()
+
+    def _seek_to_x(self, x_value: float) -> None:
+        """将波形横坐标映射为播放位置并触发 seek。"""
         if not self._seek_callback or self._duration_ms <= 0:
             return
 
@@ -414,9 +460,10 @@ class WaveformPreviewWidget(QWidget):
         if bar_area.width() <= 0:
             return
 
-        x = event.position().x()
+        x = x_value
         x = max(bar_area.left(), min(bar_area.right(), x))
         progress = (x - bar_area.left()) / bar_area.width()
         position_ms = int(progress * self._duration_ms)
+        self._position_ms = position_ms
         self._seek_callback(position_ms)
-
+        self.update()

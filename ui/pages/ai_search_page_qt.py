@@ -16,7 +16,7 @@ from qfluentwidgets import (
     SearchLineEdit, PrimaryPushButton, SubtitleLabel, 
     BodyLabel, CaptionLabel, ScrollArea, ElevatedCardWidget,
     FluentIcon, StateToolTip, InfoBar, InfoBarPosition, ProgressBar,
-    Pivot, CardWidget, StrongBodyLabel, TextEdit, SwitchButton, TransparentPushButton,
+    Pivot, CardWidget, StrongBodyLabel, TextEdit, TransparentPushButton,
     ComboBox, DoubleSpinBox
 )
 
@@ -88,6 +88,8 @@ class AISearchPage(QWidget):
         self._search_worker = None
         self._index_loading = False  # 索引是否正在后台加载
         self._job_cache = {}
+        self._job_list_expanded = False
+        self._job_list_has_items = False
         
         self._init_ui()
         self._init_engine()
@@ -256,13 +258,14 @@ class AISearchPage(QWidget):
         
         # 1. Header with Pivot
         header_container = QWidget()
-        header_container.setStyleSheet("background-color: transparent;")
+        header_container.setObjectName("aiSearchHeaderContainer")
         header_layout = QVBoxLayout(header_container)
         header_layout.setContentsMargins(24, 24, 24, 10)
+        header_layout.setSpacing(10)
         
         title = SubtitleLabel("AI 智能检索与打标")
         desc = CaptionLabel("基于 CLAP 模型 (DirectML 加速)")
-        desc.setTextColor(Qt.GlobalColor.gray)
+        desc.setObjectName("aiSearchHeaderDesc")
         header_layout.addWidget(title)
         header_layout.addWidget(desc)
         
@@ -276,15 +279,18 @@ class AISearchPage(QWidget):
         
         # 1.1 Global Selection Status Card（仅在“语义检索”标签下展示，智能打标隐藏）
         self.selection_status_card = CardWidget(self)
-        self.selection_status_card.setFixedHeight(70)
+        self.selection_status_card.setObjectName("aiSearchSelectionCard")
+        self.selection_status_card.setMinimumHeight(78)
+        self.selection_status_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         status_layout = QHBoxLayout(self.selection_status_card)
         status_layout.setContentsMargins(20, 10, 20, 10)
+        status_layout.setSpacing(10)
         
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
         self.tag_status_title = StrongBodyLabel("未选择文件")
         self.tag_status_desc = CaptionLabel("请在音效库中勾选需要处理的文件")
-        self.tag_status_desc.setTextColor(Qt.GlobalColor.gray)
+        self.tag_status_desc.setObjectName("aiSearchSelectionDesc")
         info_layout.addWidget(self.tag_status_title)
         info_layout.addWidget(self.tag_status_desc)
         
@@ -293,12 +299,12 @@ class AISearchPage(QWidget):
         
         # Explicit Indexing Button
         self.clear_index_btn = TransparentPushButton(FluentIcon.DELETE, "清除索引", self)
-        self.clear_index_btn.setFixedWidth(120)
+        self.clear_index_btn.setMinimumWidth(104)
         self.clear_index_btn.clicked.connect(self._on_clear_index)
         status_layout.addWidget(self.clear_index_btn)
         
         self.build_index_btn = PrimaryPushButton(FluentIcon.FINGERPRINT, "建立 AI 检索索引")
-        self.build_index_btn.setFixedWidth(180)
+        self.build_index_btn.setMinimumWidth(148)
         self.build_index_btn.setEnabled(False)
         self.build_index_btn.clicked.connect(self._on_start_indexing_manual)
         status_layout.addWidget(self.build_index_btn)
@@ -307,12 +313,12 @@ class AISearchPage(QWidget):
 
         # 1.2 任务状态卡片（仅在“语义检索”标签下展示，智能打标隐藏）
         self.job_status_card = CardWidget(self)
+        self.job_status_card.setObjectName("aiSearchJobCard")
         self.job_status_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        # 与上方选择卡片高度保持一致，视觉更加统一
-        self.job_status_card.setFixedHeight(70)
+        self.job_status_card.setMinimumHeight(132)
         job_layout = QVBoxLayout(self.job_status_card)
-        job_layout.setContentsMargins(20, 10, 20, 10)
-        job_layout.setSpacing(8)
+        job_layout.setContentsMargins(20, 12, 20, 12)
+        job_layout.setSpacing(10)
 
         # 标题 + 按钮 (同一行：标题左，按钮右)
         job_header_row = QHBoxLayout()
@@ -320,12 +326,22 @@ class AISearchPage(QWidget):
         
         job_title_label = StrongBodyLabel("任务状态")
         job_header_row.addWidget(job_title_label)
+        self.job_expand_btn = TransparentPushButton(FluentIcon.DOWN, "展开")
+        self.job_expand_btn.setObjectName("aiSearchJobExpandBtn")
+        self.job_expand_btn.clicked.connect(self._toggle_job_list_expanded)
+        job_header_row.addWidget(self.job_expand_btn)
         
         job_header_row.addStretch()  # 将按钮推到右侧
         
         self.job_refresh_btn = TransparentPushButton(FluentIcon.SYNC, "刷新")
         # 宽度交给布局和文本自然决定，避免在窄窗口时文字被裁剪
         self.job_refresh_btn.clicked.connect(self._refresh_job_list)
+
+        self.job_clear_btn = TransparentPushButton(FluentIcon.DELETE, "清空")
+        self.job_clear_btn.setObjectName("aiSearchJobClearBtn")
+        self.job_clear_btn.clicked.connect(self._on_clear_jobs_clicked)
+        job_header_row.addWidget(self.job_clear_btn)
+
         job_header_row.addWidget(self.job_refresh_btn)
         
         self.job_resume_btn = TransparentPushButton(FluentIcon.PLAY, "继续/重试")
@@ -340,15 +356,19 @@ class AISearchPage(QWidget):
 
         # 任务列表（有任务时显示列表，无任务时显示一行提示，保证与标题左对齐）
         self.job_list = QListWidget()
-        self.job_list.setFixedHeight(70)
+        self.job_list.setObjectName("aiSearchJobList")
+        self.job_list.setMinimumHeight(64)
+        self.job_list.setMaximumHeight(72)
         self.job_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.job_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.job_list.setStyleSheet("background: transparent;")
+        self.job_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.job_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.job_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         job_layout.addWidget(self.job_list)
 
         # 空状态标签，与“任务状态”在同一布局中左对齐
         self.job_empty_label = CaptionLabel("暂无任务记录")
-        self.job_empty_label.setTextColor(Qt.GlobalColor.gray)
+        self.job_empty_label.setObjectName("aiSearchJobEmptyLabel")
         self.job_empty_label.setVisible(False)
         job_layout.addWidget(self.job_empty_label)
 
@@ -370,66 +390,119 @@ class AISearchPage(QWidget):
 
         # 初始化任务列表
         self._refresh_job_list()
+        self._apply_job_expand_state()
         
     def _create_search_page(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 10, 24, 24)
-        layout.setSpacing(20)
-        
+        page.setObjectName("aiSearchSearchPage")
+        outer_layout = QVBoxLayout(page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = ScrollArea(page)
+        scroll.setObjectName("aiSearchSearchScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer_layout.addWidget(scroll)
+
+        content = QWidget()
+        content.setObjectName("aiSearchSearchContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(24, 14, 24, 22)
+        layout.setSpacing(16)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
         # Search Bar Area
         search_card = ElevatedCardWidget()
+        search_card.setObjectName("aiSearchQueryCard")
         search_layout = QVBoxLayout(search_card)
-        search_layout.setContentsMargins(20, 20, 20, 20)
-        
+        search_layout.setContentsMargins(18, 16, 18, 14)
+        search_layout.setSpacing(10)
+
+        query_title = BodyLabel("语义搜索")
+        query_hint = CaptionLabel("输入场景描述，按回车或点击搜索图标开始检索")
+        query_hint.setObjectName("aiSearchQueryHint")
+        query_hint.setWordWrap(True)
+        search_layout.addWidget(query_title)
+        search_layout.addWidget(query_hint)
+
         self.search_input = SearchLineEdit()
         self.search_input.setPlaceholderText("描述你想要的声音，例如：'雨中的雷声' 或 '赛车引擎'...")
         self.search_input.setClearButtonEnabled(True)
-        self.search_input.setMinimumHeight(45)
+        self.search_input.setMinimumHeight(42)
         f = self.search_input.font()
         f.setPointSize(11)
         self.search_input.setFont(f)
-        
-        # 连接搜索信号：点击搜索按钮（searchSignal 会传递文本参数）
+
         self.search_input.searchSignal.connect(self._on_search)
-        # 连接回车键：按下回车也触发搜索（returnPressed 不传递参数，需要手动获取文本）
         self.search_input.returnPressed.connect(lambda: self._on_search(self.search_input.text()))
-        
+
         search_layout.addWidget(self.search_input)
-        
-        # Indexing Status
+
         self.indexing_bar = ProgressBar()
+        self.indexing_bar.setObjectName("aiSearchIndexingBar")
         self.indexing_bar.setVisible(False)
         self.indexing_label = CaptionLabel("")
+        self.indexing_label.setObjectName("aiSearchIndexingLabel")
+        self.indexing_label.setWordWrap(True)
         self.indexing_label.setVisible(False)
         search_layout.addWidget(self.indexing_bar)
         search_layout.addWidget(self.indexing_label)
-        
+
         layout.addWidget(search_card)
-        
-        # Search Options
-        options_layout = QHBoxLayout()
-        options_layout.addStretch()
-        self.search_in_selection_switch = SwitchButton(self)
-        self.search_in_selection_switch.setOnText("仅在选中范围中搜索")
-        self.search_in_selection_switch.setOffText("搜索整个库")
-        options_layout.addWidget(self.search_in_selection_switch)
-        layout.addLayout(options_layout)
-        
+
         # Results
+        result_header = QWidget()
+        result_header.setObjectName("aiSearchResultHeader")
+        result_header_layout = QHBoxLayout(result_header)
+        result_header_layout.setContentsMargins(2, 0, 2, 0)
+        result_header_layout.setSpacing(8)
         self.list_header = BodyLabel("待索引文件 / 搜索结果")
-        layout.addWidget(self.list_header)
-        
+        result_hint = CaptionLabel("双击结果可定位到音效库")
+        result_hint.setObjectName("aiSearchResultHint")
+        result_hint.setWordWrap(True)
+        result_header_layout.addWidget(self.list_header)
+        result_header_layout.addStretch()
+        result_header_layout.addWidget(result_hint)
+        layout.addWidget(result_header)
+
         self.results_list = QListWidget()
+        self.results_list.setObjectName("aiSearchResultsList")
         self.results_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.results_list.setStyleSheet("background: transparent;")
         self.results_list.setAlternatingRowColors(True)
+        self.results_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.results_list.setMinimumHeight(220)
         self.results_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.results_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_list.customContextMenuRequested.connect(self._show_context_menu)
-        layout.addWidget(self.results_list)
-        
+        layout.addWidget(self.results_list, 1)
+
+        scroll.setWidget(content)
         return page
+
+    def _toggle_job_list_expanded(self):
+        self._job_list_expanded = not self._job_list_expanded
+        self._apply_job_expand_state()
+
+    def _apply_job_expand_state(self):
+        """根据展开状态应用任务区显示策略。"""
+        if self._job_list_expanded:
+            self.job_expand_btn.setIcon(FluentIcon.UP)
+            self.job_expand_btn.setText("收起")
+            self.job_list.setVisible(self._job_list_has_items)
+            self.job_empty_label.setVisible(not self._job_list_has_items)
+            self.job_list.setMinimumHeight(64)
+            self.job_list.setMaximumHeight(220)
+            self.job_status_card.setMinimumHeight(160)
+        else:
+            self.job_expand_btn.setIcon(FluentIcon.DOWN)
+            self.job_expand_btn.setText("展开")
+            self.job_list.setVisible(False)
+            self.job_empty_label.setVisible(False)
+            self.job_list.setMinimumHeight(0)
+            self.job_list.setMaximumHeight(0)
+            self.job_status_card.setMinimumHeight(80)
 
     def _create_tagging_page(self) -> QWidget:
         page = QWidget()
@@ -677,14 +750,15 @@ class AISearchPage(QWidget):
 
         self.job_list.clear()
         self._job_cache = {j.id: j for j in jobs}
+        self._job_list_has_items = bool(jobs)
         if not jobs:
-            # 没有任务时隐藏列表，仅显示一行提示文本，与标题左对齐
-            self.job_list.setVisible(False)
-            self.job_empty_label.setVisible(True)
+            self.job_expand_btn.setEnabled(False)
+            self._job_list_expanded = False
+            self._apply_job_expand_state()
             return
 
-        self.job_list.setVisible(True)
-        self.job_empty_label.setVisible(False)
+        self.job_expand_btn.setEnabled(True)
+        self._apply_job_expand_state()
 
         for job in jobs:
             text = self._format_job_item_text(job)
@@ -762,6 +836,70 @@ class AISearchPage(QWidget):
             return
 
         InfoBar.warning(title="无法停止", content="当前页面没有正在运行的任务", parent=self)
+
+    def _on_clear_jobs_clicked(self):
+        """清空任务状态列表中的任务记录（索引/打标/清除标签）。"""
+        from qfluentwidgets import MessageBox
+        from transcriptionist_v3.infrastructure.database.connection import session_scope
+        from transcriptionist_v3.infrastructure.database.models import Job
+        from transcriptionist_v3.application.ai_jobs.job_constants import (
+            JOB_TYPE_INDEX,
+            JOB_TYPE_TAG,
+            JOB_TYPE_CLEAR_TAGS,
+        )
+
+        # 运行中的任务不允许直接清空，避免任务线程和 DB 记录状态不同步
+        has_running_task = (
+            (self._indexing_thread and self._indexing_thread.isRunning())
+            or (self._tagging_thread and self._tagging_thread.isRunning())
+            or (self._clear_tags_thread and self._clear_tags_thread.isRunning())
+        )
+        if has_running_task:
+            InfoBar.warning(
+                title="请先停止任务",
+                content="检测到仍有任务在运行，请先点击“停止”后再清空任务记录",
+                parent=self,
+                duration=3200,
+            )
+            return
+
+        w = MessageBox(
+            "确认清空任务",
+            "确定要清空任务状态中的所有历史记录吗？该操作不会删除音效文件与索引数据。",
+            self,
+        )
+        if not w.exec():
+            return
+
+        try:
+            with session_scope() as session:
+                session.query(Job).filter(
+                    Job.job_type.in_([JOB_TYPE_INDEX, JOB_TYPE_TAG, JOB_TYPE_CLEAR_TAGS])
+                ).delete(synchronize_session=False)
+                session.commit()
+        except Exception as e:
+            logger.error(f"Failed to clear job records: {e}", exc_info=True)
+            InfoBar.error(
+                title="清空失败",
+                content="任务记录清空失败，请重试",
+                parent=self,
+                duration=3200,
+            )
+            return
+
+        self.job_list.clear()
+        self._job_cache = {}
+        self._job_list_has_items = False
+        self._job_list_expanded = False
+        self._apply_job_expand_state()
+        self._refresh_job_list()
+
+        InfoBar.success(
+            title="清空成功",
+            content="任务状态已清空",
+            parent=self,
+            duration=2200,
+        )
 
     def _compute_tag_version(self, tag_list: list) -> str:
         payload = "\n".join(tag_list).encode("utf-8")
@@ -1137,15 +1275,10 @@ class AISearchPage(QWidget):
             return
         logger.info("CLAP 检索: text_model 编码 query='%s' -> 嵌入维=%d", search_query[:50], text_embed.shape[0])
 
-        only_selected = self.search_in_selection_switch.isChecked()
+        only_selected = False
         selection = None
-        if only_selected:
-            selection = self._get_active_selection()
-            if selection.get("mode") == "none" or int(selection.get("count", 0) or 0) == 0:
-                InfoBar.warning(title="无选中范围", content="请先在库中选择文件，或关闭“仅在选中范围搜索”", parent=self, duration=2000)
-                return
         selected_set = set()
-        total_count = int(selection.get("count", 0) or 0) if only_selected and selection else (self._chunked_index["total_count"] if self._chunked_index else len(self.audio_embeddings))
+        total_count = self._chunked_index["total_count"] if self._chunked_index else len(self.audio_embeddings)
 
         try:
             cleanup_thread(self._search_thread, self._search_worker)
@@ -1204,9 +1337,8 @@ class AISearchPage(QWidget):
         MIN_SCORE_THRESHOLD = 0.22
         filtered = [(p, s) for p, s in results if s >= MIN_SCORE_THRESHOLD]
         if not results:
-            only_selected = self.search_in_selection_switch.isChecked()
             self.list_header.setText(f"搜索结果: '{text}' (共 0 条)")
-            self.results_list.addItem("未找到匹配结果" + (" (当前仅搜索已选文件)" if only_selected else ""))
+            self.results_list.addItem("未找到匹配结果")
             return
         top5 = results[:5]
         top5_log = ", ".join(f"{Path(p).name}={s:.2%}" for p, s in top5)

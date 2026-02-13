@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 REM NOTE:
 REM Keep this script ASCII-only to avoid cmd.exe encoding issues.
@@ -45,8 +45,24 @@ echo Embedded python: >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [1/6] Install build tools...
-echo [1/6] Install build tools... >> "%LOG_FILE%"
+echo [1/8] Preflight check (required source assets)...
+echo [1/8] Preflight check (required source assets)... >> "%LOG_FILE%"
+set "REQUIRED_SOURCE_DIRS=ui\resources\icons ui\resources\images ui\resources\styles resources\fonts locale plugins data\models\onnx_preprocess"
+for %%D in (%REQUIRED_SOURCE_DIRS%) do (
+  if not exist "%%~D" (
+    echo ERROR: Missing required source directory: %%~D
+    echo ERROR: Missing required source directory: %%~D >> "%LOG_FILE%"
+    pause
+    exit /b 1
+  )
+)
+echo Preflight source check passed.
+echo Preflight source check passed. >> "%LOG_FILE%"
+echo. >> "%LOG_FILE%"
+echo.
+
+echo [2/8] Install build tools...
+echo [2/8] Install build tools... >> "%LOG_FILE%"
 "%PYTHON_EXE%" -m pip install pyinstaller pillow --quiet
 "%PYTHON_EXE%" -m pip install pyinstaller pillow --quiet >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
@@ -63,8 +79,8 @@ echo Upgrading packaging... >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [2/6] Convert icon...
-echo [2/6] Convert icon... >> "%LOG_FILE%"
+echo [3/8] Convert icon...
+echo [3/8] Convert icon... >> "%LOG_FILE%"
 "%PYTHON_EXE%" convert_icon.py
 "%PYTHON_EXE%" convert_icon.py >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
@@ -77,8 +93,8 @@ if errorlevel 1 (
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [3/6] Clean output...
-echo [3/6] Clean output... >> "%LOG_FILE%"
+echo [4/8] Clean output...
+echo [4/8] Clean output... >> "%LOG_FILE%"
 REM Force delete build and dist directories
 if exist build (
   rmdir /s /q build 2>nul
@@ -92,8 +108,8 @@ echo Cleaned build and dist directories. >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [4/6] PyInstaller build...
-echo [4/6] PyInstaller build... >> "%LOG_FILE%"
+echo [5/8] PyInstaller build...
+echo [5/8] PyInstaller build... >> "%LOG_FILE%"
 echo PyInstaller output will be saved to log file...
 echo PyInstaller output will be saved to log file... >> "%LOG_FILE%"
 echo.
@@ -115,46 +131,124 @@ if errorlevel 1 (
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [5/6] Build installer (Inno Setup)...
-echo [5/6] Build installer (Inno Setup)... >> "%LOG_FILE%"
-
-REM Find Inno Setup Compiler (ISCC.exe)
-set "ISCC="
-REM 2. Try standard locations if not found in PATH
-if not "%ISCC%"=="" goto :found_iscc
-if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
-if exist "C:\Program Files (x86)\Inno Setup 5\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 5\ISCC.exe"
-REM Also check local app data or other common user install paths if needed
-
-if "%BUILD_INSTALLER%"=="1" (
-  if not "%ISCC%"=="" (
-    :found_iscc
-    echo Building installer with: %ISCC%
-    echo Building installer with: %ISCC% >> "%LOG_FILE%"
-    "%ISCC%" "installer.iss" >> "%LOG_FILE%" 2>&1
-    if errorlevel 1 (
-      echo WARNING: installer build failed. Check installer.iss output above.
-      echo WARNING: installer build failed. >> "%LOG_FILE%"
-    ) else (
-      echo Installer build OK.
-      echo Installer build OK. >> "%LOG_FILE%"
-    )
-  ) else (
-    echo WARNING: Inno Setup not detected. Skipping installer build.
-    echo WARNING: Inno Setup not detected. >> "%LOG_FILE%"
-    echo Install Inno Setup and rerun this script if you need a setup.exe.
-  )
-) else (
-  echo Skipped - installer build disabled.
-  echo Skipped - installer build disabled. >> "%LOG_FILE%"
-  echo To enable: set BUILD_INSTALLER=1
+echo [6/8] Verify packaged layout...
+echo [6/8] Verify packaged layout... >> "%LOG_FILE%"
+set "DIST_MAIN_DIR="
+for /d %%D in ("dist\*") do (
+  if not defined DIST_MAIN_DIR if exist "%%~fD\*.exe" set "DIST_MAIN_DIR=%%~fD"
 )
+
+if not defined DIST_MAIN_DIR (
+  echo ERROR: Could not detect packaged portable directory under dist\
+  echo ERROR: Could not detect packaged portable directory under dist\ >> "%LOG_FILE%"
+  pause
+  exit /b 1
+)
+
+echo Detected portable directory: %DIST_MAIN_DIR%
+echo Detected portable directory: %DIST_MAIN_DIR% >> "%LOG_FILE%"
+
+set "VERIFY_FAIL=0"
+set "REQUIRED_PACKAGED_DIRS=ui\resources\icons ui\resources\images ui\resources\styles resources\fonts locale plugins data\models\onnx_preprocess"
+for %%D in (%REQUIRED_PACKAGED_DIRS%) do (
+  powershell -NoProfile -Command ^
+    "$base=[IO.Path]::GetFullPath('%DIST_MAIN_DIR%');" ^
+    "$p1=Join-Path $base '%%~D';" ^
+    "$p2=Join-Path (Join-Path $base '_internal') '%%~D';" ^
+    "if((Test-Path -LiteralPath $p1) -or (Test-Path -LiteralPath $p2)){exit 0}else{exit 1}" >nul 2>&1
+  if errorlevel 1 (
+    echo ERROR: Missing packaged directory: %%~D
+    echo ERROR: Missing packaged directory: %%~D >> "%LOG_FILE%"
+    set "VERIFY_FAIL=1"
+  )
+)
+
+if not exist "%DIST_MAIN_DIR%\metadata_worker.exe" (
+  echo ERROR: Missing metadata_worker.exe in packaged output.
+  echo ERROR: Missing metadata_worker.exe in packaged output. >> "%LOG_FILE%"
+  set "VERIFY_FAIL=1"
+)
+
+set "MAIN_EXE_FOUND="
+for %%E in ("%DIST_MAIN_DIR%\*.exe") do (
+  if exist "%%~fE" (
+    if /I not "%%~nxE"=="metadata_worker.exe" set "MAIN_EXE_FOUND=1"
+  )
+)
+if not defined MAIN_EXE_FOUND (
+  echo ERROR: Main app executable not found in packaged output.
+  echo ERROR: Main app executable not found in packaged output. >> "%LOG_FILE%"
+  set "VERIFY_FAIL=1"
+)
+
+if "%VERIFY_FAIL%"=="1" (
+  echo ERROR: Packaged layout verification failed.
+  echo ERROR: Packaged layout verification failed. >> "%LOG_FILE%"
+  pause
+  exit /b 1
+)
+
+echo Packaged layout verification passed.
+echo Packaged layout verification passed. >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo.
 
-echo [6/6] Done. Check the dist\ folder for the portable version.
-echo [6/6] Done. Check the dist\ folder for the portable version. >> "%LOG_FILE%"
+echo [7/8] Build installer (Inno Setup)...
+echo [7/8] Build installer (Inno Setup)... >> "%LOG_FILE%"
+
+REM Find Inno Setup Compiler (ISCC.exe)
+set "ISCC="
+
+REM 1) Try PATH first
+for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do (
+  if not defined ISCC set "ISCC=%%I"
+)
+
+REM 2) Try standard locations
+if not defined ISCC if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "C:\Program Files (x86)\Inno Setup 5\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 5\ISCC.exe"
+
+if /I "%BUILD_INSTALLER%"=="0" (
+  echo Skipped - installer build disabled.
+  echo Skipped - installer build disabled. >> "%LOG_FILE%"
+  echo To enable: set BUILD_INSTALLER=1
+  goto installer_step_done
+)
+
+if not defined ISCC (
+  echo WARNING: Inno Setup not detected. Skipping installer build.
+  echo WARNING: Inno Setup not detected. >> "%LOG_FILE%"
+  echo Install Inno Setup and rerun this script if you need a setup.exe.
+  goto installer_step_done
+)
+
+echo Building installer with: %ISCC%
+echo Building installer with: %ISCC% >> "%LOG_FILE%"
+"%ISCC%" "installer.iss" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+  echo WARNING: installer build failed, retrying with timestamp output name...
+  echo WARNING: installer build failed, retrying with timestamp output name... >> "%LOG_FILE%"
+  for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "STAMP=%%T"
+  "%ISCC%" "/Fsetup_%STAMP%" "installer.iss" >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 (
+    echo WARNING: installer retry still failed. Check installer.iss output above.
+    echo WARNING: installer retry still failed. >> "%LOG_FILE%"
+  ) else (
+    echo Installer build OK (timestamp filename).
+    echo Installer build OK (timestamp filename). >> "%LOG_FILE%"
+  )
+) else (
+  echo Installer build OK.
+  echo Installer build OK. >> "%LOG_FILE%"
+)
+
+:installer_step_done
+echo. >> "%LOG_FILE%"
+echo.
+
+echo [8/8] Done. Check the dist\ folder for the portable version.
+echo [8/8] Done. Check the dist\ folder for the portable version. >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo ============================================================ >> "%LOG_FILE%"
 echo Build completed at: %date% %time% >> "%LOG_FILE%"

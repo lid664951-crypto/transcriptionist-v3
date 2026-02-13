@@ -1,0 +1,75 @@
+name: search-benchmark-gate
+
+on:
+  pull_request:
+    branches: ["main", "master"]
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "benchmark profile"
+        required: true
+        default: "ci"
+        type: choice
+        options:
+          - ci
+          - standard
+      baseline_json:
+        description: "optional baseline json path"
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+
+      - name: Run release gate
+        shell: bash
+        run: |
+          PROFILE="${{ github.event.inputs.profile || 'ci' }}"
+          BASELINE_INPUT="${{ github.event.inputs.baseline_json || '' }}"
+          DEFAULT_BASELINE="docs/reports/baseline/search_benchmark_matrix_baseline_${PROFILE}.json"
+          BASELINE_PATH="${BASELINE_INPUT:-$DEFAULT_BASELINE}"
+
+          if [ -f "$BASELINE_PATH" ]; then
+            python scripts/run_search_benchmark_release_gate.py \
+              --mode gate \
+              --profile "$PROFILE" \
+              --baseline-json "$BASELINE_PATH" \
+              --tag "ci_gate_${GITHUB_RUN_ID}" \
+              --stop-on-fail
+          else
+            echo "Baseline not found: $BASELINE_PATH"
+            echo "Fallback to baseline mode (no regression compare)."
+            python scripts/run_search_benchmark_release_gate.py \
+              --mode baseline \
+              --profile "$PROFILE" \
+              --tag "ci_baseline_${GITHUB_RUN_ID}" \
+              --stop-on-fail
+          fi
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-benchmark-reports-gate-${{ github.run_id }}
+          path: docs/reports/*.json
+          if-no-files-found: ignore
+

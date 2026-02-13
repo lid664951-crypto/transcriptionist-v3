@@ -16,6 +16,10 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from transcriptionist_v3.core.config import AppConfig
+from transcriptionist_v3.core.config import (
+    get_recommended_translate_chunk_size,
+    get_recommended_translate_concurrency,
+)
 
 from ..base import (
     AIResult,
@@ -188,13 +192,8 @@ class OpenAICompatibleService(TranslationService):
         if isinstance(override, int) and override >= 1:
             return override
 
-        limits = {
-            "deepseek": 20,    # 默认高并发
-            "doubao": 20,
-            "volcengine": 20,
-            "openai": 5,       # 默认为 Tier 1 安全限制
-        }
-        return limits.get(provider_id, 2)
+        network_profile = AppConfig.get("ai.translate_network_profile", "normal")
+        return get_recommended_translate_concurrency(provider_id, network_profile)
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """获取HTTP会话"""
@@ -319,11 +318,20 @@ class OpenAICompatibleService(TranslationService):
             return AIResult(status=AIResultStatus.SUCCESS, data=[])
         
         # 将长列表分成小批次：可通过配置调整 (ai.translate_chunk_size)
-        configured_chunk = AppConfig.get("ai.translate_chunk_size", 40)
-        try:
-            configured_chunk = int(configured_chunk)
-        except (TypeError, ValueError):
-            configured_chunk = 40
+        configured_chunk = AppConfig.get("ai.translate_chunk_size", None)
+        if configured_chunk is None:
+            configured_chunk = get_recommended_translate_chunk_size(
+                self._config.provider_id,
+                AppConfig.get("ai.translate_network_profile", "normal"),
+            )
+        else:
+            try:
+                configured_chunk = int(configured_chunk)
+            except (TypeError, ValueError):
+                configured_chunk = get_recommended_translate_chunk_size(
+                    self._config.provider_id,
+                    AppConfig.get("ai.translate_network_profile", "normal"),
+                )
         # 限制在合理区间内，避免设置过小/过大
         if configured_chunk < 5:
             logger.warning(f"translate_chunk_size {configured_chunk} is too small, clamping to 5")

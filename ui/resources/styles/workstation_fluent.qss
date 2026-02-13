@@ -1,0 +1,60 @@
+/*
+ * Transcriptionist Fluent Theme
+ * 目标：尽量复用 qfluentwidgets 默认视觉，仅做品牌级轻定制
+ */
+
+QWidget {
+    font-family: "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+}
+
+QLabel {
+    background: transparent;
+}
+
+StandardTitleBar {
+    border: none;
+}
+
+QWidget#libraryPage,
+QWidget#projectsPage,
+QWidget#onlineResourcesPage,
+QWidget#tagsPage,
+QWidget#aiSearchPage,
+QWidget#aiTranslatePage,
+QWidget#aiGenerationPage,
+QWidget#settingsPage {
+    background: transparent;
+}
+
+QWidget#libraryEmptyDropCard {
+    border-radius: 12px;
+}
+
+QListWidget,
+QTreeWidget,
+QTreeView,
+QTableView {
+    border: none;
+    outline: none;
+    background: transparent;
+}
+
+QHeaderView::section {
+    border: none;
+    padding: 8px 10px;
+    font-weight: 600;
+}
+
+QScrollBar:vertical,
+QScrollBar:horizontal {
+    background: transparent;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+    height: 0px;
+}

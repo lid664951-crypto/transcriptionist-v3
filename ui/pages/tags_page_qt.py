@@ -134,7 +134,6 @@ class TagsPage(QWidget):
         toolbar.addWidget(self.delete_btn)
         
         # 视图切换：一个按钮，点击弹出菜单选择「列表」或「平铺」
-        toolbar.addStretch()
         list_icon = getattr(FluentIcon, 'LIST', FluentIcon.DOCUMENT)
         grid_icon = getattr(FluentIcon, 'GRID', FluentIcon.ALBUM)
         self._view_list_icon = list_icon
@@ -144,6 +143,7 @@ class TagsPage(QWidget):
         self.view_mode_btn.setToolTip("视图：列表 / 平铺")
         self.view_mode_btn.setFixedSize(32, 32)
         self.view_mode_btn.clicked.connect(self._show_view_mode_menu)
+        toolbar.addStretch()
         toolbar.addWidget(self.view_mode_btn)
         
         layout.addLayout(toolbar)

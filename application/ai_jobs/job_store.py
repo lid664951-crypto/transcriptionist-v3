@@ -94,7 +94,8 @@ def ensure_job_items_for_paths(
     if not paths:
         return
 
-    BATCH = 500
+    BATCH = 400
+    SQLITE_IN_BATCH = 500
     items = []
     for i in range(0, len(paths), BATCH):
         batch = paths[i : i + BATCH]
@@ -103,11 +104,15 @@ def ensure_job_items_for_paths(
         for p in batch:
             if "\\" in p:
                 normalized.add(p.replace("\\", "/"))
-        rows = (
-            session.query(AudioFile.id, AudioFile.file_path)
-            .filter(AudioFile.file_path.in_(list(normalized)))
-            .all()
-        )
+        normalized_list = list(normalized)
+        rows = []
+        for j in range(0, len(normalized_list), SQLITE_IN_BATCH):
+            in_batch = normalized_list[j : j + SQLITE_IN_BATCH]
+            rows.extend(
+                session.query(AudioFile.id, AudioFile.file_path)
+                .filter(AudioFile.file_path.in_(in_batch))
+                .all()
+            )
         path_to_id = {row.file_path: row.id for row in rows}
         for path in batch:
             audio_id = path_to_id.get(path)

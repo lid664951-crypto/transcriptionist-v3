@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass, field, asdict
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -31,6 +33,22 @@ def get_default_scan_workers() -> int:
         n = 4
     # 保留 1 核给系统，上限 64，至少 1
     return max(1, min(n - 1, 64)) if n > 1 else 1
+
+
+def get_default_waveform_workers() -> int:
+    """根据 CPU 核心数计算波形渲染推荐线程数（默认倾向 4）。"""
+    try:
+        n = cpu_count() or 4
+    except Exception:
+        n = 4
+
+    if n <= 1:
+        return 1
+    if n <= 8:
+        return 4
+    if n <= 16:
+        return 6
+    return 8
 
 
 def get_recommended_indexing_cpu_processes() -> int:
@@ -67,6 +85,90 @@ def get_recommended_indexing_chunk_size() -> int:
     chunk = int(ram_gb * 80)
     return max(100, min(3000, chunk))
 
+
+def get_recommended_indexing_gpu_batch_size() -> int:
+    """
+    根据 GPU 显存推荐索引批量大小。
+    规则：vram_mb / 512，范围限制 2-16；检测失败时回退 4。
+    """
+    vram_mb = None
+
+    try:
+        import pynvml  # type: ignore
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        vram_mb = int(info.total / (1024 * 1024))
+        pynvml.nvmlShutdown()
+    except Exception:
+        vram_mb = None
+
+    if not vram_mb and sys.platform in {"win32", "linux"}:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                first = result.stdout.strip().splitlines()[0].strip()
+                vram_mb = int(first)
+        except Exception:
+            vram_mb = None
+
+    if vram_mb and vram_mb > 0:
+        return max(2, min(16, int(vram_mb / 512)))
+    return 4
+
+
+def get_recommended_translate_concurrency(
+    provider_id: Optional[str] = None,
+    network_profile: str = "normal",
+) -> int:
+    """
+    根据翻译服务商 + 网络环境给出推荐并发数。
+    该值用于“未显式配置并发”时的默认回退，避免固定 20 导致限流。
+    """
+    provider = str(provider_id or "deepseek").strip().lower()
+    profile = str(network_profile or "normal").strip().lower()
+    profile_idx = {"normal": 0, "good": 1, "lan": 2}.get(profile, 0)
+
+    # 与设置页提示区间保持一致，取区间低位偏中，优先稳定性
+    table = {
+        "deepseek": (6, 10, 14),
+        "doubao": (8, 12, 16),
+        "volcengine": (8, 12, 16),
+        "openai": (2, 3, 4),
+        "local": (12, 18, 24),
+    }
+    values = table.get(provider, (6, 10, 14))
+    value = values[max(0, min(2, profile_idx))]
+    return max(1, min(32, int(value)))
+
+
+def get_recommended_translate_chunk_size(
+    provider_id: Optional[str] = None,
+    network_profile: str = "normal",
+) -> int:
+    """
+    根据翻译服务商 + 网络环境给出推荐翻译批次大小。
+    """
+    provider = str(provider_id or "deepseek").strip().lower()
+    profile = str(network_profile or "normal").strip().lower()
+    profile_idx = {"normal": 0, "good": 1, "lan": 2}.get(profile, 0)
+
+    table = {
+        "openai": (20, 30, 40),
+        "deepseek": (30, 40, 50),
+        "doubao": (30, 45, 60),
+        "volcengine": (30, 45, 60),
+        "local": (40, 60, 80),
+    }
+    values = table.get(provider, (30, 40, 50))
+    value = values[max(0, min(2, profile_idx))]
+    return max(5, min(200, int(value)))
+
 T = TypeVar('T')
 
 
@@ -82,12 +184,14 @@ DEFAULT_CONFIG = {
     
     # UI settings
     "ui": {
-        "theme": "system",  # "light", "dark", "system"
+        "theme": "dark",  # "light" | "dark"
         "language": "zh_CN",
         "window_width": 1200,
         "window_height": 800,
         "sidebar_width": 250,
         "show_waveform": True,
+        "library_list_view_mode": "card",     # "card" | "table"
+        "library_card_density": "standard",   # "standard" | "compact"
     },
     
     # Player settings
@@ -102,6 +206,9 @@ DEFAULT_CONFIG = {
         "max_results": 1000,
         "enable_fuzzy": True,
         "recent_searches_limit": 20,
+        "library_orchestrator_mode": "lexical",  # "lexical" | "hybrid"
+        "library_orchestrator_top_k": 5000,
+        "library_show_observation": True,
     },
     
     # AI settings
@@ -116,8 +223,8 @@ DEFAULT_CONFIG = {
         # AI 翻译模型选择
         "translation_model_type": "general",  # "general" | "hy_mt15_onnx"
         # AI 批量翻译性能设置
-        "translate_chunk_size": 40,    # 每批翻译的文件名数量（逻辑批次）
-        "translate_concurrency": 20,   # 默认并发请求数（可在设置中调整）
+        "translate_chunk_size": None,  # None=按模型+网络环境动态推荐
+        "translate_concurrency": None, # None=按模型+网络环境动态推荐
         "translate_network_profile": "normal",  # "normal" | "good" | "lan"
         # AI 检索性能设置（推荐值由设备检测计算，此处仅为未检测时的回退默认）
         "indexing_mode": "balanced",   # "balanced" | "performance"
@@ -127,16 +234,38 @@ DEFAULT_CONFIG = {
         "indexing_chunk_size": None,   # 块大小：None=按本机内存 GB×80 计算推荐
         "indexing_chunk_small_threshold": 500,  # 总文件数低于此值时不拆块（100-1000）
         "indexing_memory_limit_mb": None,  # 可选：单块内存上限 MB，用于进一步约束块大小，避免百万级 OOM
+        # 查询编排（M4）
+        "search_orchestrator_mode": "hybrid",  # "semantic" | "lexical" | "hybrid"
+        "search_orchestrator_top_k": 500,
+        "search_rrf_k": 60,
+        "search_rrf_lexical_weight": 1.0,
+        "search_rrf_semantic_weight": 1.0,
+        "search_consistency_check_enabled": True,
+        "search_consistency_top_n": 20,
+        # AI 音效生成（可灵）
+        "audio_provider": "kling",
+        "audio_access_key": "",
+        "audio_secret_key": "",
+        "audio_base_url": "https://api-beijing.klingai.com",
+        "audio_callback_url": "",
+        "audio_poll_interval": 2,
+        "audio_task_timeout_seconds": 300,
     },
     
     # Performance settings
     # scan_workers: 库扫描/元数据提取并行数。None 表示“自动”（按 CPU 检测）；首次加载时若为 4 会迁移为自动检测值
     "performance": {
         "scan_workers": None,  # None = 自动根据 CPU 检测，见 get_default_scan_workers()
+        "waveform_workers": None,  # None = 自动根据 CPU 检测，见 get_default_waveform_workers()
         "cache_size_mb": 256,
         "waveform_cache_enabled": True,
     },
     
+    # Database settings
+    "database": {
+        "sqlite_filename": "transcriptionist.db",
+    },
+
     # Backup settings
     "backup": {
         "enabled": True,
@@ -191,10 +320,48 @@ class ConfigManager:
                 
                 # Merge with defaults (loaded values override defaults)
                 self._config = self._merge_config(self._defaults, loaded)
+                dirty = False
+
                 # 迁移：旧版默认 4 改为 None，表示“自动根据 CPU”
                 perf = self._config.get("performance") or {}
                 if perf.get("scan_workers") == 4:
                     self._config.setdefault("performance", {})["scan_workers"] = None
+                    dirty = True
+
+                # 迁移：翻译性能默认值从固定写死改为动态推荐（仅迁移旧默认，不覆盖用户自定义）
+                ai_cfg = self._config.get("ai") or {}
+                profile = str(ai_cfg.get("translate_network_profile") or "normal")
+                model_index = int(ai_cfg.get("model_index") or 0)
+                provider_map = {0: "deepseek", 1: "openai", 2: "doubao", 3: "local"}
+                provider = provider_map.get(model_index, "deepseek")
+
+                raw_chunk = ai_cfg.get("translate_chunk_size", None)
+                raw_chunk_int = None
+                try:
+                    raw_chunk_int = int(raw_chunk)
+                except Exception:
+                    raw_chunk_int = None
+                if raw_chunk in (None, "") or raw_chunk_int == 40:
+                    self._config.setdefault("ai", {})["translate_chunk_size"] = get_recommended_translate_chunk_size(provider, profile)
+                    dirty = True
+
+                raw_conc = ai_cfg.get("translate_concurrency", None)
+                raw_conc_int = None
+                try:
+                    raw_conc_int = int(raw_conc)
+                except Exception:
+                    raw_conc_int = None
+                if raw_conc in (None, "") or raw_conc_int == 20:
+                    self._config.setdefault("ai", {})["translate_concurrency"] = get_recommended_translate_concurrency(provider, profile)
+                    dirty = True
+
+                # 迁移：索引 GPU 批量旧默认 4 改为“按显存推荐”（仅未自定义场景）
+                if ai_cfg.get("batch_size", None) in (None, 4):
+                    rec_batch = get_recommended_indexing_gpu_batch_size()
+                    self._config.setdefault("ai", {})["batch_size"] = rec_batch
+                    dirty = True
+
+                if dirty:
                     self.save()
                 logger.info(f"Configuration loaded from {self.config_path}")
             else:
@@ -272,6 +439,8 @@ class ConfigManager:
             # 库扫描并行数：None 表示“自动”，返回 CPU 检测值
             if key == "performance.scan_workers" and value is None:
                 return get_default_scan_workers()
+            if key == "performance.waveform_workers" and value is None:
+                return get_default_waveform_workers()
             return value
         except (KeyError, TypeError):
             return default

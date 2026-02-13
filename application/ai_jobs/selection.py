@@ -7,9 +7,13 @@ from __future__ import annotations
 import os
 from typing import Callable, Iterable, List
 
-from sqlalchemy import or_, false
+from sqlalchemy import or_, false, select, union_all
 
 from transcriptionist_v3.infrastructure.database.models import AudioFile
+
+
+SQLITE_IN_SAFE_BATCH = 500
+SQLITE_OR_SAFE_CHUNK = 100
 
 
 def normalize_path(path: str) -> str:
@@ -37,6 +41,63 @@ def _folder_prefixes(folders: Iterable[str]) -> List[str]:
             p += os.sep
         prefixes.append(p)
     return prefixes
+
+
+def _chunked(values: List[str], size: int) -> List[List[str]]:
+    if size <= 0:
+        return [values]
+    return [values[i : i + size] for i in range(0, len(values), size)]
+
+
+def _compress_prefixes(prefixes: Iterable[str]) -> List[str]:
+    """压缩前缀集合：若子路径已被父路径覆盖则移除子路径。"""
+    unique = sorted(set(p for p in prefixes if p), key=lambda x: (len(x), x))
+    if not unique:
+        return []
+
+    kept: List[str] = []
+    for current in unique:
+        covered = False
+        for parent in kept:
+            if current.startswith(parent):
+                covered = True
+                break
+        if not covered:
+            kept.append(current)
+    return kept
+
+
+def _build_or_in_filter(values: List[str]):
+    chunks = _chunked(values, SQLITE_IN_SAFE_BATCH)
+    clauses = [AudioFile.file_path.in_(chunk) for chunk in chunks if chunk]
+    if not clauses:
+        return false()
+    if len(clauses) == 1:
+        return clauses[0]
+    return or_(*clauses)
+
+
+def _build_like_filter(patterns: List[str]):
+    """
+    构建 LIKE 过滤。
+    - 小规模直接 OR。
+    - 大规模使用分块 UNION，规避 SQLite expression tree 深度限制。
+    """
+    chunk_clauses = []
+    for chunk in _chunked(patterns, SQLITE_OR_SAFE_CHUNK):
+        if not chunk:
+            continue
+        chunk_clauses.append(or_(*[AudioFile.file_path.like(pattern) for pattern in chunk]))
+
+    if not chunk_clauses:
+        return false()
+    if len(chunk_clauses) == 1:
+        return chunk_clauses[0]
+
+    # 分块子查询后 UNION，避免超长 OR 树
+    selects = [select(AudioFile.id).where(clause) for clause in chunk_clauses]
+    id_union = union_all(*selects).subquery()
+    return AudioFile.id.in_(select(id_union.c.id))
 
 
 class SelectionFilter:
@@ -78,20 +139,22 @@ def apply_selection_filters(query, selection: dict | None):
 
     if mode == "folders":
         folders = selection.get("folders") or []
-        patterns: List[str] = []
+        prefixes: List[str] = []
         for folder in folders:
             p = normalize_path(folder)
             if not p:
                 continue
             if not p.endswith(os.sep):
                 p += os.sep
-            patterns.append(p + "%")
+            prefixes.append(p)
             posix = p.replace("\\", "/")
             if posix != p:
-                patterns.append(posix + "%")
+                prefixes.append(posix)
+        prefixes = _compress_prefixes(prefixes)
+        patterns = [prefix + "%" for prefix in prefixes]
         if not patterns:
             return query.filter(false())
-        return query.filter(or_(*[AudioFile.file_path.like(p) for p in patterns]))
+        return query.filter(_build_like_filter(patterns))
 
     if mode == "files":
         files = selection.get("files") or []
@@ -105,6 +168,6 @@ def apply_selection_filters(query, selection: dict | None):
             normalized.add(n)
             posix = n.replace("\\", "/")
             normalized.add(posix)
-        return query.filter(AudioFile.file_path.in_(list(normalized)))
+        return query.filter(_build_or_in_filter(list(normalized)))
 
     return query.filter(false())

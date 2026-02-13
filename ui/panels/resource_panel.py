@@ -16,40 +16,16 @@ class ResourcePanel(QWidget):
         self._init_ui()
     
     def _init_ui(self):
+        self.setObjectName("resourcePanel")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
         # 使用标准 QTabWidget，顶部标签
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("resourceTabs")
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
         self.tabs.setDocumentMode(True)  # 更现代的外观
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: none;
-                background: #1e1e1e;
-            }
-            QTabBar {
-                qproperty-drawBase: 0;
-            }
-            QTabBar::tab {
-                background: #2b2b2b;
-                color: #888;
-                padding: 8px 16px;
-                margin-right: 2px;
-                border: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QTabBar::tab:selected {
-                background: #1e1e1e;
-                color: #3399ff;
-            }
-            QTabBar::tab:hover:!selected {
-                background: #333;
-                color: #ccc;
-            }
-        """)
         
         layout.addWidget(self.tabs, 1)
     

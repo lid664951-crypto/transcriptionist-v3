@@ -1,4 +1,4 @@
-"""
+﻿"""
 设置页面 - 现代化设计
 """
 
@@ -21,8 +21,8 @@ from qfluentwidgets import (
     ElevatedCardWidget, ScrollArea, isDarkTheme, ProgressBar, MessageDialog
 )
 
-from transcriptionist_v3.ui.utils.workers import ModelDownloadWorker, cleanup_thread, MusicGenDownloadWorker, HyMT15DownloadWorker
-from transcriptionist_v3.core.config import AppConfig
+from transcriptionist_v3.ui.utils.workers import ModelDownloadWorker, cleanup_thread, HyMT15DownloadWorker
+from transcriptionist_v3.core.config import AppConfig, get_default_waveform_workers
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ def _detect_gpu_vram() -> tuple[int | None, str]:
 class SettingsPage(QWidget):
     """设置页面 - 现代化设计"""
     
-    theme_changed = Signal(int)
+    theme_changed = Signal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,14 +107,12 @@ class SettingsPage(QWidget):
         self._download_thread = None
         self._download_worker = None
         
-        self._musicgen_download_thread = None
-        self._musicgen_download_worker = None
-        
         # 避免“加载配置时触发 textChanged/valueChanged 又把默认值写回磁盘”
         self._is_loading_settings = False
 
         self._init_ui()
         self._load_ai_settings()
+        self._load_audio_provider_settings()
         self._load_gpu_settings()
         self._load_indexing_settings()
         self._check_model_status()
@@ -126,6 +124,7 @@ class SettingsPage(QWidget):
             from transcriptionist_v3.core.config import get_config_manager
             get_config_manager().load()
             self._load_ai_settings()
+            self._load_audio_provider_settings()
             self._load_gpu_settings()
             self._load_indexing_settings()
         except Exception as e:
@@ -164,7 +163,21 @@ class SettingsPage(QWidget):
         
         appearance_title = SubtitleLabel("外观")
         appearance_layout.addWidget(appearance_title)
-        
+
+        # 主题模式
+        theme_row = self._create_setting_row(
+            "主题模式",
+            "切换浅色/深色主题，跟随设置即时生效"
+        )
+        self.theme_combo = ComboBox()
+        self.theme_combo.addItems(["深色", "浅色"])
+        self.theme_combo.setFixedWidth(140)
+        current_theme = str(AppConfig.get("ui.theme", "dark") or "dark").strip().lower()
+        self.theme_combo.setCurrentIndex(1 if current_theme == "light" else 0)
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_mode_changed)
+        theme_row.addWidget(self.theme_combo)
+        appearance_layout.addLayout(theme_row)
+
         
         # 语言
         lang_row = self._create_setting_row(
@@ -349,6 +362,142 @@ class SettingsPage(QWidget):
         scroll_layout.addWidget(ai_card)
 
         # ═══════════════════════════════════════════════════════════
+        # AI 音效服务商配置（音效生成）
+        # ═══════════════════════════════════════════════════════════
+        audio_provider_card = ElevatedCardWidget()
+        audio_provider_layout = QVBoxLayout(audio_provider_card)
+        audio_provider_layout.setContentsMargins(20, 16, 20, 16)
+        audio_provider_layout.setSpacing(12)
+
+        audio_provider_header = QHBoxLayout()
+        audio_provider_header.setContentsMargins(0, 0, 0, 0)
+        audio_provider_header.setSpacing(8)
+
+        audio_provider_title = SubtitleLabel("AI 音效服务商配置")
+        audio_provider_header.addWidget(audio_provider_title)
+        audio_provider_header.addStretch(1)
+
+        self.audio_provider_toggle_btn = PushButton("收起", self)
+        self.audio_provider_toggle_btn.setCheckable(True)
+        self.audio_provider_toggle_btn.setChecked(True)
+        self.audio_provider_toggle_btn.setFixedWidth(88)
+        self.audio_provider_toggle_btn.clicked.connect(self._on_toggle_audio_provider_section)
+        audio_provider_header.addWidget(self.audio_provider_toggle_btn)
+        audio_provider_layout.addLayout(audio_provider_header)
+
+        self.audio_provider_content = QWidget()
+        self.audio_provider_content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.audio_provider_content.setStyleSheet("background: transparent;")
+        audio_provider_content_layout = QVBoxLayout(self.audio_provider_content)
+        audio_provider_content_layout.setContentsMargins(0, 0, 0, 0)
+        audio_provider_content_layout.setSpacing(12)
+
+        provider_row = self._create_setting_row(
+            "服务商",
+            "用于文本生成音效（当前支持可灵 AI）"
+        )
+        self.audio_provider_combo = ComboBox()
+        self.audio_provider_combo.addItems(["可灵 AI (Kling)"])
+        self.audio_provider_combo.setFixedWidth(220)
+        self.audio_provider_combo.currentIndexChanged.connect(self._save_audio_provider_settings)
+        provider_row.addWidget(self.audio_provider_combo)
+        audio_provider_content_layout.addLayout(provider_row)
+
+        audio_access_key_row = self._create_setting_row(
+            "Access Key",
+            "可灵账号标识（AK），用于签名身份"
+        )
+        self.audio_access_key_edit = LineEdit()
+        self.audio_access_key_edit.setPlaceholderText("填写可灵 Access Key")
+        self.audio_access_key_edit.setFixedWidth(320)
+        self.audio_access_key_edit.textChanged.connect(self._save_audio_provider_settings)
+        audio_access_key_row.addWidget(self.audio_access_key_edit)
+        audio_provider_content_layout.addLayout(audio_access_key_row)
+
+        audio_secret_key_row = self._create_setting_row(
+            "Secret Key",
+            "可灵密钥（SK），仅创建时可见，请妥善保管"
+        )
+        self.audio_secret_key_edit = LineEdit()
+        self.audio_secret_key_edit.setPlaceholderText("填写可灵 Secret Key")
+        self.audio_secret_key_edit.setFixedWidth(320)
+        self.audio_secret_key_edit.setEchoMode(LineEdit.EchoMode.Password)
+        self.audio_secret_key_edit.textChanged.connect(self._save_audio_provider_settings)
+        audio_secret_key_row.addWidget(self.audio_secret_key_edit)
+        audio_provider_content_layout.addLayout(audio_secret_key_row)
+
+        audio_auth_test_row = self._create_setting_row(
+            "鉴权测试",
+            "调用可灵账户查询接口验证 AK/SK 是否可用（不触发生成）"
+        )
+        self.audio_auth_test_btn = PushButton("测试鉴权", self)
+        self.audio_auth_test_btn.setFixedWidth(120)
+        self.audio_auth_test_btn.clicked.connect(self._on_test_audio_provider_auth)
+        audio_auth_test_row.addWidget(self.audio_auth_test_btn)
+        audio_provider_content_layout.addLayout(audio_auth_test_row)
+
+        audio_base_url_row = self._create_setting_row(
+            "Base URL",
+            "可灵 API 网关地址"
+        )
+        self.audio_base_url_edit = LineEdit()
+        self.audio_base_url_edit.setPlaceholderText("https://api-beijing.klingai.com")
+        self.audio_base_url_edit.setFixedWidth(320)
+        self.audio_base_url_edit.textChanged.connect(self._save_audio_provider_settings)
+        audio_base_url_row.addWidget(self.audio_base_url_edit)
+        audio_provider_content_layout.addLayout(audio_base_url_row)
+
+        audio_callback_row = self._create_setting_row(
+            "回调地址（可选）",
+            "可灵任务完成回调 URL，可留空"
+        )
+        self.audio_callback_url_edit = LineEdit()
+        self.audio_callback_url_edit.setPlaceholderText("例如：https://your-domain/callback")
+        self.audio_callback_url_edit.setFixedWidth(320)
+        self.audio_callback_url_edit.textChanged.connect(self._save_audio_provider_settings)
+        audio_callback_row.addWidget(self.audio_callback_url_edit)
+        audio_provider_content_layout.addLayout(audio_callback_row)
+
+        audio_poll_row = self._create_setting_row(
+            "轮询间隔（秒）",
+            "查询任务状态的时间间隔"
+        )
+        self.audio_poll_interval_spin = SpinBox()
+        self.audio_poll_interval_spin.setRange(1, 30)
+        self.audio_poll_interval_spin.setValue(2)
+        self.audio_poll_interval_spin.setFixedWidth(220)
+        self.audio_poll_interval_spin.valueChanged.connect(self._save_audio_provider_settings)
+        audio_poll_row.addWidget(self.audio_poll_interval_spin)
+        audio_provider_content_layout.addLayout(audio_poll_row)
+
+        audio_timeout_row = self._create_setting_row(
+            "任务超时（秒）",
+            "单个任务等待超时时间"
+        )
+        self.audio_timeout_spin = SpinBox()
+        self.audio_timeout_spin.setRange(60, 3600)
+        self.audio_timeout_spin.setValue(300)
+        self.audio_timeout_spin.setFixedWidth(220)
+        self.audio_timeout_spin.valueChanged.connect(self._save_audio_provider_settings)
+        audio_timeout_row.addWidget(self.audio_timeout_spin)
+        audio_provider_content_layout.addLayout(audio_timeout_row)
+
+        audio_provider_hint = CaptionLabel(
+            "提示：该模块仅使用 Access Key + Secret Key（JWT）鉴权。"
+            "常用网关：api.klingai.com / api-beijing.klingai.com / api-singapore.klingai.com"
+        )
+        audio_provider_hint.setTextColor(Qt.GlobalColor.gray)
+        audio_provider_hint.setWordWrap(True)
+        audio_provider_content_layout.addWidget(audio_provider_hint)
+        audio_provider_layout.addWidget(self.audio_provider_content)
+
+        collapsed = bool(AppConfig.get("ui.audio_provider_section_collapsed", False))
+        self.audio_provider_toggle_btn.setChecked(not collapsed)
+        self._set_audio_provider_section_expanded(not collapsed, persist=False)
+
+        scroll_layout.addWidget(audio_provider_card)
+
+        # ═══════════════════════════════════════════════════════════
         # AI 翻译模型配置（专用翻译模型）- 已注释（HY-MT1.5 已禁用，此模块无实际意义）
         # ═══════════════════════════════════════════════════════════
         # translation_model_card = ElevatedCardWidget()
@@ -431,7 +580,7 @@ class SettingsPage(QWidget):
         # scroll_layout.addWidget(translation_model_card)  # 已注释：HY-MT1.5 已禁用，此模块无实际意义
 
         # ═══════════════════════════════════════════════════════════
-        # AI 批量翻译性能（输入框 + 网络单独一行）
+        # AI 批量翻译性能
         # ═══════════════════════════════════════════════════════════
         translate_card = ElevatedCardWidget()
         translate_layout = QVBoxLayout(translate_card)
@@ -449,7 +598,7 @@ class SettingsPage(QWidget):
         self.translate_batch_spin = SpinBox()
         self.translate_batch_spin.setRange(5, 200)
         self.translate_batch_spin.setValue(40)
-        self.translate_batch_spin.setFixedWidth(200)  # 与网络环境下拉框同宽
+        self.translate_batch_spin.setFixedWidth(200)
         self._translate_perf_signals_connected = False
         batch_row.addWidget(self.translate_batch_spin)
         translate_layout.addLayout(batch_row)
@@ -462,27 +611,12 @@ class SettingsPage(QWidget):
         self.translate_conc_spin = SpinBox()
         self.translate_conc_spin.setRange(1, 32)
         self.translate_conc_spin.setValue(20)
-        self.translate_conc_spin.setFixedWidth(200)  # 与网络环境下拉框同宽
+        self.translate_conc_spin.setFixedWidth(200)
         conc_row.addWidget(self.translate_conc_spin)
         translate_layout.addLayout(conc_row)
 
-        # 网络环境（单独一行，用于推荐区间）
-        network_row = self._create_setting_row(
-            "网络环境",
-            "用于推荐并发区间：一般网络 / 良好网络 / 局域网·机房同区"
-        )
-        self.network_profile_combo = ComboBox()
-        self.network_profile_combo.addItems([
-            "一般网络",
-            "良好网络",
-            "局域网 / 机房同区"
-        ])
-        self.network_profile_combo.setFixedWidth(200)
-        network_row.addWidget(self.network_profile_combo)
-        translate_layout.addLayout(network_row)
-
         # 推荐提示
-        self.translate_conc_hint = CaptionLabel("并发/批次建议会根据模型和网络环境自动给出区间提示。")
+        self.translate_conc_hint = CaptionLabel("并发/批次建议会根据当前模型自动给出区间提示。")
         self.translate_conc_hint.setTextColor(Qt.GlobalColor.gray)
         translate_layout.addWidget(self.translate_conc_hint)
 
@@ -504,7 +638,7 @@ class SettingsPage(QWidget):
         scan_workers_default = get_default_scan_workers()
         scan_row = self._create_setting_row(
             "库扫描并行数",
-            "导入音效库时提取元数据使用的进程数，根据 CPU 自动检测；超大批量会按批处理并流式输出"
+            "导入音效库时提取元数据使用的进程数；超大批量会按批处理并流式输出"
         )
         self.scan_workers_combo = ComboBox()
         self.scan_workers_combo.addItems([
@@ -528,7 +662,38 @@ class SettingsPage(QWidget):
         scan_hint.setTextColor(Qt.GlobalColor.gray)
         performance_layout.addWidget(scan_hint)
         performance_layout.addLayout(scan_row)
-        
+
+        # 波形渲染线程（卡片波形 + 预览波形）
+        waveform_workers_default = get_default_waveform_workers()
+        waveform_row = self._create_setting_row(
+            "波形渲染线程",
+            "控制音效卡片波形与预览波形的后台渲染并发；线程过高会增加 CPU 占用"
+        )
+        self.waveform_workers_combo = ComboBox()
+        self.waveform_workers_combo.addItems([
+            "自动（根据 CPU）",
+            "2", "4", "6", "8", "12", "16",
+            "自定义..."
+        ])
+        self.waveform_workers_combo.setFixedWidth(200)
+        self.waveform_workers_combo.currentIndexChanged.connect(self._on_waveform_workers_changed)
+        waveform_row.addWidget(self.waveform_workers_combo)
+
+        self.waveform_workers_spin = SpinBox()
+        self.waveform_workers_spin.setRange(1, 32)
+        self.waveform_workers_spin.setValue(max(1, min(32, waveform_workers_default)))
+        self.waveform_workers_spin.setFixedWidth(100)
+        self.waveform_workers_spin.setVisible(False)
+        self.waveform_workers_spin.valueChanged.connect(self._save_performance_settings)
+        waveform_row.addWidget(self.waveform_workers_spin)
+
+        waveform_hint = CaptionLabel(
+            f"根据检测到的 CPU 推荐: {waveform_workers_default} 线程（默认建议使用自动）。"
+        )
+        waveform_hint.setTextColor(Qt.GlobalColor.gray)
+        performance_layout.addWidget(waveform_hint)
+        performance_layout.addLayout(waveform_row)
+
         scroll_layout.addWidget(performance_card)
         
         # ═══════════════════════════════════════════════════════════
@@ -593,7 +758,7 @@ class SettingsPage(QWidget):
         recommended_chunk = get_recommended_indexing_chunk_size()
         chunk_size_row = self._create_setting_row(
             "块大小（每块文件数）",
-            "建立索引时每块处理的文件数，主要影响内存占用。根据本机内存大小计算推荐值。"
+            "建立索引时每块处理的文件数，主要影响内存占用与吞吐。"
         )
         self.chunk_size_spin = SpinBox()
         self.chunk_size_spin.setRange(100, 3000)
@@ -608,14 +773,7 @@ class SettingsPage(QWidget):
         self.chunk_size_spin.valueChanged.connect(self._on_chunk_settings_changed)
         chunk_size_row.addWidget(self.chunk_size_spin)
         indexing_layout.addLayout(chunk_size_row)
-        try:
-            from transcriptionist_v3.core.utils import get_system_ram_gb
-            ram_gb = get_system_ram_gb()
-            chunk_hint = CaptionLabel(f"根据检测到的内存 {ram_gb:.1f}GB 计算，当前推荐 {recommended_chunk}（约 80 文件/GB）。")
-        except Exception:
-            chunk_hint = CaptionLabel(f"当前推荐块大小 {recommended_chunk}（根据本机内存计算）。")
-        chunk_hint.setTextColor(Qt.GlobalColor.gray)
-        indexing_layout.addWidget(chunk_hint)
+        # 旧块大小推荐提示已下线，避免与 GPU 推荐文案重复
         
         scroll_layout.addWidget(indexing_card)
         
@@ -663,39 +821,8 @@ class SettingsPage(QWidget):
         model_layout.addLayout(clap_row)
         
         # ───────────────────────────────────────────────────────────
-        # MusicGen 模型状态
+        # 旧 MusicGen 模型状态（已下线）
         # ───────────────────────────────────────────────────────────
-        musicgen_row = self._create_setting_row(
-            "AI 音乐生成模型 (MusicGen)",
-            "用于生成音乐 (FP16, ~900MB)"
-        )
-        
-        mg_btn_layout = QHBoxLayout()
-        mg_btn_layout.setSpacing(8)
-        
-        self.mg_download_btn = PrimaryPushButton("下载模型", self)
-        self.mg_download_btn.setFixedWidth(100)
-        self.mg_download_btn.clicked.connect(self._on_download_musicgen)
-        
-        self.mg_status_label = CaptionLabel("未检测到模型")
-        self.mg_status_label.setTextColor(Qt.GlobalColor.gray)
-        
-        mg_btn_layout.addWidget(self.mg_status_label)
-        mg_btn_layout.addStretch()
-        
-        self.mg_open_folder_btn = PushButton(FluentIcon.FOLDER, "打开目录", self)
-        self.mg_open_folder_btn.clicked.connect(self._on_open_musicgen_dir)
-        mg_btn_layout.addWidget(self.mg_open_folder_btn)
-        
-        self.mg_delete_btn = PushButton(FluentIcon.DELETE, "删除", self)
-        self.mg_delete_btn.clicked.connect(self._on_delete_musicgen)
-        mg_btn_layout.addWidget(self.mg_delete_btn)
-        
-        mg_btn_layout.addWidget(self.mg_download_btn)
-        
-        musicgen_row.addLayout(mg_btn_layout)
-        model_layout.addLayout(musicgen_row)
-
         # ───────────────────────────────────────────────────────────
         # HY-MT1.5 翻译模型（ONNX）- 已注释（模型加载慢且翻译质量不稳定）
         # ───────────────────────────────────────────────────────────
@@ -757,7 +884,7 @@ class SettingsPage(QWidget):
         output_title = SubtitleLabel("音频输出")
         output_layout.addWidget(output_title)
         
-        # Audio Output Path (for Freesound downloads and MusicGen generation)
+        # Audio Output Path (for Freesound downloads and AI audio generation)
         download_row = self._create_setting_row(
             "音频保存路径",
             "从 Freesound 下载的音效和 AI 生成的音频保存位置"
@@ -815,7 +942,7 @@ class SettingsPage(QWidget):
         about_title = SubtitleLabel("关于")
         about_layout.addWidget(about_title)
         
-        version_label = BodyLabel("音译家 AI 音效管理工具 v1.1.1")
+        version_label = BodyLabel("音译家 AI 音效管理工具 v1.2.0")
         version_label.setStyleSheet("background: transparent; font-weight: 500;")
         about_layout.addWidget(version_label)
         
@@ -823,7 +950,10 @@ class SettingsPage(QWidget):
         copyright_label.setStyleSheet("background: transparent; color: #888888;")
         about_layout.addWidget(copyright_label)
         
-        features_text = CaptionLabel("核心功能：AI 智能翻译、语义检索、标签管理、UCS 命名规范、在线资源下载")
+        features_text = CaptionLabel(
+            "核心功能：AI 批量翻译、AI 检索与打标、标签管理、UCS 命名规范、在线资源检索与下载、AI 音效工坊。\n"
+            "版本亮点：可灵 AK/SK 鉴权链路、音效卡片专业波形、波形线程可调、在线资源体验与设置页重构优化。"
+        )
         features_text.setStyleSheet("background: transparent; color: #999999;")
         features_text.setWordWrap(True)
         about_layout.addWidget(features_text)
@@ -876,8 +1006,23 @@ class SettingsPage(QWidget):
         info.addWidget(subtitle_label, 0, Qt.AlignmentFlag.AlignLeft)
         
         row.addLayout(info, 1)
-        
+
         return row
+
+    def _on_toggle_audio_provider_section(self):
+        """切换 AI 音效服务商配置面板折叠状态。"""
+        expanded = bool(self.audio_provider_toggle_btn.isChecked())
+        self._set_audio_provider_section_expanded(expanded, persist=True)
+
+    def _set_audio_provider_section_expanded(self, expanded: bool, persist: bool = False):
+        """设置 AI 音效服务商配置面板展开/收起。"""
+        if hasattr(self, "audio_provider_content"):
+            self.audio_provider_content.setVisible(bool(expanded))
+        if hasattr(self, "audio_provider_toggle_btn"):
+            self.audio_provider_toggle_btn.setText("收起" if expanded else "展开")
+
+        if persist:
+            AppConfig.set("ui.audio_provider_section_collapsed", not bool(expanded))
     
     
     def _get_model_dir(self) -> Path:
@@ -917,29 +1062,6 @@ class SettingsPage(QWidget):
             self.open_folder_btn.setEnabled(True) # Always allow opening folder
             self.delete_btn.setEnabled(False)
 
-        # check MusicGen
-        from transcriptionist_v3.application.ai_engine.musicgen.downloader import MusicGenDownloader
-        mg_downloader = MusicGenDownloader()
-        if mg_downloader.is_installed():
-            self.mg_status_label.setText("模型已就绪 (FP16)")
-            self.mg_status_label.setTextColor(Qt.GlobalColor.green)
-            self.mg_download_btn.setText("重新下载")
-            self.mg_open_folder_btn.setEnabled(True)
-            self.mg_delete_btn.setEnabled(True)
-        else:
-            missing = len(mg_downloader.get_missing_files())
-            if missing < len(MusicGenDownloader.MODEL_CONFIGS):
-                 self.mg_status_label.setText(f"下载不完整 (缺 {missing} 文件)")
-                 self.mg_status_label.setTextColor(Qt.GlobalColor.darkYellow)
-                 self.mg_download_btn.setText("继续下载")
-                 self.mg_open_folder_btn.setEnabled(True)
-                 self.mg_delete_btn.setEnabled(True) # Allow deleting partial downloads
-            else:
-                 self.mg_status_label.setText("未检测到模型")
-                 self.mg_status_label.setTextColor(Qt.GlobalColor.gray)
-                 self.mg_download_btn.setText("下载模型")
-                 self.mg_open_folder_btn.setEnabled(True)
-                 self.mg_delete_btn.setEnabled(False)
 
     def _on_download_model(self):
         """开始下载模型"""
@@ -964,85 +1086,6 @@ class SettingsPage(QWidget):
         self._download_thread.start()
         logger.info(f"Started model download to {model_dir}")
 
-    def _on_download_musicgen(self):
-        """开始下载 MusicGen 模型"""
-        self.mg_download_btn.setEnabled(False)
-        self.download_progress.setVisible(True)
-        self.download_info_label.setVisible(True)
-        self.download_info_label.setText("准备下载 MusicGen...")
-        self.download_progress.setValue(0)
-        
-        self._musicgen_download_thread = QThread()
-        self._musicgen_download_worker = MusicGenDownloadWorker()
-        self._musicgen_download_worker.moveToThread(self._musicgen_download_thread)
-        
-        self._musicgen_download_thread.started.connect(self._musicgen_download_worker.run)
-        self._musicgen_download_worker.progress.connect(self._on_download_progress)
-        self._musicgen_download_worker.finished.connect(self._on_musicgen_finished)
-        self._musicgen_download_worker.error.connect(self._on_download_error)
-        
-        self._musicgen_download_thread.start()
-        logger.info("Started MusicGen download")
-
-    def _on_musicgen_finished(self, result):
-        """MusicGen 下载完成"""
-        logger.info("MusicGen download finished")
-        cleanup_thread(self._musicgen_download_thread, self._musicgen_download_worker)
-        
-        self.download_progress.setVisible(False)
-        self.download_info_label.setVisible(False)
-        self.mg_download_btn.setEnabled(True)
-        
-        self._check_model_status()
-        
-        InfoBar.success(
-            title="下载完成",
-            content="MusicGen 模型已准备就绪",
-            parent=self.window(),
-            position=InfoBarPosition.TOP,
-            duration=3000
-        )
-
-    def _on_open_musicgen_dir(self):
-        """打开 MusicGen 模型目录"""
-        from transcriptionist_v3.application.ai_engine.musicgen.downloader import MusicGenDownloader
-        model_dir = MusicGenDownloader().models_dir
-        if not model_dir.exists():
-            model_dir.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(model_dir)))
-
-    def _on_delete_musicgen(self):
-        """删除 MusicGen 模型"""
-        w = MessageDialog(
-            "删除模型",
-            "确定要删除已下载的 MusicGen 模型文件吗？这将释放磁盘空间，但下次使用时需要重新下载。",
-            self
-        )
-        if w.exec():
-            from transcriptionist_v3.application.ai_engine.musicgen.downloader import MusicGenDownloader
-            model_dir = MusicGenDownloader().models_dir
-            try:
-                if model_dir.exists():
-                    shutil.rmtree(model_dir)
-                    model_dir.mkdir(parents=True, exist_ok=True)
-                
-                self._check_model_status()
-                InfoBar.success(
-                    title="删除成功",
-                    content="MusicGen 模型文件已清理",
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=2000
-                )
-            except Exception as e:
-                logger.error(f"Failed to delete MusicGen model: {e}")
-                InfoBar.error(
-                    title="删除失败",
-                    content=str(e),
-                    parent=self,
-                    position=InfoBarPosition.TOP,
-                    duration=3000
-                )
 
     def _on_download_progress(self, current: int, total: int, msg: str):
         """下载进度回调"""
@@ -1149,7 +1192,7 @@ class SettingsPage(QWidget):
             "• 配置文件（API Key、偏好设置等）\n"
             "• 数据备份文件\n"
             "• 术语表和命名规则\n"
-            "• AI 模型文件（CLAP、MusicGen）\n"
+            "• AI 模型文件（CLAP）\n"
             "• 运行日志\n\n"
             "注意：音频源文件不会被删除，只删除软件管理的数据。\n"
             "操作完成后，软件将自动重启并恢复到初始状态。",
@@ -1283,6 +1326,12 @@ class SettingsPage(QWidget):
         
         # 更新性能推荐提示
         self._update_translate_perf_hint()
+
+    def _on_theme_mode_changed(self, index: int):
+        """主题模式切换"""
+        mode = "light" if index == 1 else "dark"
+        AppConfig.set("ui.theme", mode)
+        self.theme_changed.emit(mode)
     
     def _on_base_url_changed(self, text: str):
         """Base URL 改变时的验证和提示"""
@@ -1407,8 +1456,8 @@ class SettingsPage(QWidget):
         AppConfig.set("ai.translate_concurrency", int(conc))
 
         # 网络环境
-        profile_map = {0: "normal", 1: "good", 2: "lan"}
-        profile = profile_map.get(self.network_profile_combo.currentIndex(), "normal")
+        # 网络环境模块已下线，统一按 "normal" 保存
+        profile = "normal"
         AppConfig.set("ai.translate_network_profile", profile)
 
         # 强制保存配置到磁盘（确保重启后能加载）
@@ -1467,7 +1516,8 @@ class SettingsPage(QWidget):
                 try:
                     self.translate_batch_spin.valueChanged.disconnect(self._on_translate_perf_changed)
                     self.translate_conc_spin.valueChanged.disconnect(self._on_translate_perf_changed)
-                    self.network_profile_combo.currentIndexChanged.disconnect(self._on_translate_perf_changed)
+                    if hasattr(self, "network_profile_combo"):
+                        self.network_profile_combo.currentIndexChanged.disconnect(self._on_translate_perf_changed)
                 except Exception:
                     pass
                 self._translate_perf_signals_connected = False
@@ -1491,14 +1541,12 @@ class SettingsPage(QWidget):
             self.translate_conc_spin.setValue(conc)
 
             profile = AppConfig.get("ai.translate_network_profile", "normal")
-            profile_idx_map = {"normal": 0, "good": 1, "lan": 2}
             logger.debug(f"Loading ai.translate_network_profile = {profile}")
-            self.network_profile_combo.setCurrentIndex(profile_idx_map.get(profile, 0))
+            # 网络环境模块已下线，不再显示/设置 network_profile_combo
 
             # 加载完成后，连接信号（避免初始化时触发保存）
             self.translate_batch_spin.valueChanged.connect(self._on_translate_perf_changed)
             self.translate_conc_spin.valueChanged.connect(self._on_translate_perf_changed)
-            self.network_profile_combo.currentIndexChanged.connect(self._on_translate_perf_changed)
             self._translate_perf_signals_connected = True
             logger.info(f"Translation performance signals connected, loaded values: batch={batch_size}, conc={conc}, profile={profile}")
 
@@ -1517,6 +1565,180 @@ class SettingsPage(QWidget):
             self.freesound_path_edit.setText(freesound_path)
         finally:
             self._is_loading_settings = False
+
+    def _save_audio_provider_settings(self):
+        """保存 AI 音效服务商设置（可灵）"""
+        if getattr(self, "_is_loading_settings", False):
+            return
+
+        provider = "kling"
+        access_key = (self.audio_access_key_edit.text() or "").strip()
+        secret_key = (self.audio_secret_key_edit.text() or "").strip()
+        base_url = (self.audio_base_url_edit.text() or "").strip() or "https://api-beijing.klingai.com"
+        callback_url = (self.audio_callback_url_edit.text() or "").strip()
+        poll_interval = int(self.audio_poll_interval_spin.value())
+        timeout_seconds = int(self.audio_timeout_spin.value())
+
+        AppConfig.set("ai.audio_provider", provider)
+        AppConfig.set("ai.audio_access_key", access_key)
+        AppConfig.set("ai.audio_secret_key", secret_key)
+        AppConfig.set("ai.audio_base_url", base_url)
+        AppConfig.set("ai.audio_callback_url", callback_url)
+        AppConfig.set("ai.audio_poll_interval", poll_interval)
+        AppConfig.set("ai.audio_task_timeout_seconds", timeout_seconds)
+
+    def _load_audio_provider_settings(self):
+        """加载 AI 音效服务商设置（可灵）"""
+        self._is_loading_settings = True
+        try:
+            provider = str(AppConfig.get("ai.audio_provider", "kling") or "kling").strip().lower()
+            access_key = AppConfig.get("ai.audio_access_key", "") or ""
+            secret_key = AppConfig.get("ai.audio_secret_key", "") or ""
+            base_url = AppConfig.get("ai.audio_base_url", "https://api-beijing.klingai.com") or "https://api-beijing.klingai.com"
+            collapsed = bool(AppConfig.get("ui.audio_provider_section_collapsed", False))
+            callback_url = AppConfig.get("ai.audio_callback_url", "") or ""
+
+            try:
+                poll_interval = int(AppConfig.get("ai.audio_poll_interval", 2) or 2)
+            except (TypeError, ValueError):
+                poll_interval = 2
+            poll_interval = max(1, min(30, poll_interval))
+
+            try:
+                timeout_seconds = int(AppConfig.get("ai.audio_task_timeout_seconds", 300) or 300)
+            except (TypeError, ValueError):
+                timeout_seconds = 300
+            timeout_seconds = max(60, min(3600, timeout_seconds))
+
+            # 当前仅开放可灵一项，统一映射到索引 0
+            self.audio_provider_combo.setCurrentIndex(0 if provider == "kling" else 0)
+            self.audio_access_key_edit.setText(str(access_key))
+            self.audio_secret_key_edit.setText(str(secret_key))
+            self.audio_base_url_edit.setText(str(base_url))
+            self.audio_callback_url_edit.setText(str(callback_url))
+            self.audio_poll_interval_spin.setValue(poll_interval)
+            self.audio_timeout_spin.setValue(timeout_seconds)
+            self.audio_provider_toggle_btn.setChecked(not collapsed)
+            self._set_audio_provider_section_expanded(not collapsed, persist=False)
+        finally:
+            self._is_loading_settings = False
+
+    def _on_test_audio_provider_auth(self):
+        """测试可灵 AK/SK 鉴权（不发生成任务）。"""
+        access_key = (self.audio_access_key_edit.text() or "").strip()
+        secret_key = (self.audio_secret_key_edit.text() or "").strip()
+        base_url = (self.audio_base_url_edit.text() or "").strip() or "https://api-beijing.klingai.com"
+
+        if not access_key or not secret_key:
+            InfoBar.warning(
+                title="配置不完整",
+                content="请先填写 Access Key 和 Secret Key",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500,
+            )
+            return
+
+        self.audio_auth_test_btn.setEnabled(False)
+        self.audio_auth_test_btn.setText("测试中...")
+
+        class AudioAuthTestThread(QThread):
+            result_received = Signal(dict)
+            error_received = Signal(str)
+
+            def __init__(self, ak: str, sk: str, url: str):
+                super().__init__()
+                self.ak = ak
+                self.sk = sk
+                self.url = url
+
+            def run(self):
+                candidate_urls: list[str] = []
+                for raw in [
+                    self.url,
+                    "https://api.klingai.com",
+                    "https://api-beijing.klingai.com",
+                    "https://api-singapore.klingai.com",
+                ]:
+                    clean = (raw or "").strip().rstrip("/")
+                    if clean and clean not in candidate_urls:
+                        candidate_urls.append(clean)
+
+                errors: list[str] = []
+                try:
+                    from transcriptionist_v3.application.ai_engine.providers.kling_audio import KlingAudioService
+                    for index, base in enumerate(candidate_urls):
+                        try:
+                            service = KlingAudioService(
+                                access_key=self.ak,
+                                secret_key=self.sk,
+                                base_url=base,
+                                timeout=12.0,
+                            )
+                            payload = service.query_account_costs()
+                            self.result_received.emit({
+                                "payload": payload,
+                                "base_url": base,
+                                "fallback_used": index > 0,
+                            })
+                            return
+                        except Exception as e:
+                            errors.append(f"{base} -> {e}")
+
+                    if errors:
+                        detail = "；".join(errors)
+                        self.error_received.emit(detail)
+                    else:
+                        self.error_received.emit("鉴权测试失败：未获取到错误详情")
+                except Exception as e:
+                    self.error_received.emit(str(e))
+
+        self._audio_auth_test_thread = AudioAuthTestThread(access_key, secret_key, base_url)
+        self._audio_auth_test_thread.result_received.connect(self._on_audio_auth_test_result)
+        self._audio_auth_test_thread.error_received.connect(self._on_audio_auth_test_error)
+        self._audio_auth_test_thread.start()
+
+    def _on_audio_auth_test_result(self, result: dict):
+        """可灵鉴权测试成功回调。"""
+        self.audio_auth_test_btn.setEnabled(True)
+        self.audio_auth_test_btn.setText("测试鉴权")
+
+        payload = result.get("payload") if isinstance(result, dict) else {}
+        resolved_base_url = str(result.get("base_url") or "").strip() if isinstance(result, dict) else ""
+        fallback_used = bool(result.get("fallback_used")) if isinstance(result, dict) else False
+
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        packs = []
+        if isinstance(data, dict):
+            packs = data.get("resource_pack_subscribe_infos") or []
+        pack_count = len(packs) if isinstance(packs, list) else 0
+
+        if fallback_used and resolved_base_url:
+            self.audio_base_url_edit.setText(resolved_base_url)
+
+        InfoBar.success(
+            title="鉴权成功",
+            content=(
+                f"AK/SK 有效，账户查询可用（资源包数量：{pack_count}）"
+                + (f"；已自动切换到可用网关：{resolved_base_url}" if fallback_used and resolved_base_url else "")
+            ),
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=4500,
+        )
+
+    def _on_audio_auth_test_error(self, error_msg: str):
+        """可灵鉴权测试失败回调。"""
+        self.audio_auth_test_btn.setEnabled(True)
+        self.audio_auth_test_btn.setText("测试鉴权")
+
+        InfoBar.error(
+            title="鉴权失败",
+            content=f"可灵鉴权测试失败：{error_msg}",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=7000,
+        )
     
     # def _on_general_model_switch_changed(self, checked: bool):
     #     """通用模型开关改变时的处理 - 已注释（整个翻译模型选择模块已移除）"""
@@ -1678,7 +1900,7 @@ class SettingsPage(QWidget):
         self._hy_mt15_download_worker.error.connect(self._on_hy_mt15_download_error)
         self._hy_mt15_download_worker.progress.connect(self._on_hy_mt15_download_progress)
 
-        # 统一进度条风格：复用模型管理卡片底部的大进度条（与 CLAP/MusicGen 一致）
+        # 统一进度条风格：复用模型管理卡片底部的大进度条（与 CLAP 一致）
         if hasattr(self, "download_progress"):
             self.download_progress.setVisible(True)
             self.download_progress.setValue(0)
@@ -1718,7 +1940,7 @@ class SettingsPage(QWidget):
             self.download_progress.setVisible(True)
             self.download_progress.setValue(progress)
 
-        # 统一与 CLAP/MusicGen 一样：用底部的提示文字展示当前阶段
+        # 与 CLAP 一样：用底部提示文字展示当前阶段
         text = message or ""
         if hasattr(self, "download_info_label"):
             if text:
@@ -2096,6 +2318,42 @@ class SettingsPage(QWidget):
                 duration=2000
             )
 
+    def _on_waveform_workers_changed(self, index):
+        """波形渲染线程选择改变：0=自动，1-6=2/4/6/8/12/16，7=自定义"""
+        preset_values = {0: None, 1: 2, 2: 4, 3: 6, 4: 8, 5: 12, 6: 16, 7: -1}
+        value = preset_values.get(index, -1)
+
+        if value == -1:
+            self.waveform_workers_spin.setVisible(True)
+            self.waveform_workers_combo.setFixedWidth(200)
+            return
+
+        self.waveform_workers_spin.setVisible(False)
+        self.waveform_workers_combo.setFixedWidth(250)
+        AppConfig.set("performance.waveform_workers", value)
+        applied = self._apply_waveform_workers_runtime(value)
+        label = "自动（根据 CPU）" if value is None else str(value)
+        suffix = "，已即时生效" if applied else "，重启后生效"
+        InfoBar.success(
+            title="设置已保存",
+            content=f"波形渲染线程已设置为 {label}{suffix}",
+            parent=self,
+            position=InfoBarPosition.TOP,
+            duration=2000,
+        )
+
+    def _apply_waveform_workers_runtime(self, workers: int | None = None) -> bool:
+        """尝试将波形线程设置即时应用到音效面板。"""
+        try:
+            win = self.window()
+            panel = getattr(win, "audioFilesPanel", None)
+            if panel and hasattr(panel, "apply_waveform_workers"):
+                panel.apply_waveform_workers(workers)
+                return True
+        except Exception as e:
+            logger.debug(f"Apply waveform workers runtime failed: {e}")
+        return False
+
     def _on_chunk_settings_changed(self, *args):
         """块大小变更：仅保存块大小，少于 500 文件时不拆块已固定为 500"""
         chunk_size = self.chunk_size_spin.value()
@@ -2114,7 +2372,7 @@ class SettingsPage(QWidget):
         )
 
     def _on_translate_perf_changed(self, *args):
-        """AI 批量翻译性能参数变更（批次大小 / 并发数 / 网络环境）。
+        """AI 批量翻译性能参数变更（批次大小 / 并发数）。
 
         这里除了通过 AppConfig 写入外，再额外直接同步一次 config.json，
         避免某些情况下旧配置覆盖新值，导致重启后参数恢复为默认。
@@ -2129,8 +2387,7 @@ class SettingsPage(QWidget):
 
         batch_size = self.translate_batch_spin.value()
         conc = self.translate_conc_spin.value()
-        profile_map = {0: "normal", 1: "good", 2: "lan"}
-        profile = profile_map.get(self.network_profile_combo.currentIndex(), "normal")
+        profile = "normal"
 
         # 先通过 AppConfig 写入内存配置，并触发一次保存
         AppConfig.set("ai.translate_chunk_size", int(batch_size))
@@ -2176,7 +2433,7 @@ class SettingsPage(QWidget):
         self._update_translate_perf_hint()
 
     def _update_translate_perf_hint(self):
-        """根据当前模型 + 网络环境，给出推荐并发区间提示。"""
+        """根据当前模型，给出推荐并发区间提示。"""
         if not hasattr(self, "translate_conc_hint"):
             return
 
@@ -2222,7 +2479,7 @@ class SettingsPage(QWidget):
         #     return
 
         model_idx = self.model_combo.currentIndex()
-        net_idx = self.network_profile_combo.currentIndex() if hasattr(self, "network_profile_combo") else 0
+        net_idx = 0
 
         # 本地模型特殊处理
         if model_idx == 3:  # 本地模型
@@ -2251,7 +2508,7 @@ class SettingsPage(QWidget):
         else:
             provider = "doubao"
 
-        # 网络档位：0=一般，1=良好，2=局域网/机房
+        # 固定网络档位：normal
         if provider == "deepseek":
             ranges = [(4, 8), (8, 16), (12, 24)]
         elif provider == "openai":
@@ -2268,10 +2525,8 @@ class SettingsPage(QWidget):
             "doubao": "豆包/火山方舟",
         }.get(provider, provider)
 
-        net_name = ["一般网络", "良好网络", "局域网 / 机房同区"][max(0, min(2, net_idx))]
-
         self.translate_conc_hint.setText(
-            f"{provider_name} + {net_name} 建议并发区间约为 {lo}–{hi} 路，"
+            f"{provider_name} 建议并发区间约为 {lo}–{hi} 路，"
             f"当前设置：{current} 路。若频繁出现 429/超时，可适当下调。"
         )
     
@@ -2318,6 +2573,28 @@ class SettingsPage(QWidget):
                 parent=self,
                 position=InfoBarPosition.TOP,
                 duration=2000
+            )
+
+        # 保存自定义波形渲染线程
+        if getattr(self, "waveform_workers_spin", None) and self.waveform_workers_spin.isVisible():
+            waveform_workers = self.waveform_workers_spin.value()
+            if not (1 <= waveform_workers <= 32):
+                InfoBar.error(
+                    title="数值无效",
+                    content="波形渲染线程必须在 1-32 之间",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                )
+                return
+            AppConfig.set("performance.waveform_workers", int(waveform_workers))
+            applied = self._apply_waveform_workers_runtime(int(waveform_workers))
+            suffix = "，已即时生效" if applied else "，重启后生效"
+            InfoBar.success(
+                title="设置已保存",
+                content=f"波形渲染线程已设置为 {waveform_workers}{suffix}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=2000,
             )
     
     def _save_gpu_settings(self):
@@ -2372,6 +2649,20 @@ class SettingsPage(QWidget):
             self.scan_workers_combo.setCurrentIndex(7)
             self.scan_workers_spin.setValue(max(1, min(64, int(scan_workers))))
             self.scan_workers_spin.setVisible(True)
+
+        # 加载波形渲染线程（None=自动，或 1-32）
+        from transcriptionist_v3.core.config import get_config_manager
+        waveform_workers = get_config_manager().get_raw("performance.waveform_workers")
+        if waveform_workers is None:
+            self.waveform_workers_combo.setCurrentIndex(0)
+            self.waveform_workers_spin.setVisible(False)
+        elif waveform_workers in (2, 4, 6, 8, 12, 16):
+            self.waveform_workers_combo.setCurrentIndex({2: 1, 4: 2, 6: 3, 8: 4, 12: 5, 16: 6}[waveform_workers])
+            self.waveform_workers_spin.setVisible(False)
+        else:
+            self.waveform_workers_combo.setCurrentIndex(7)
+            self.waveform_workers_spin.setValue(max(1, min(32, int(waveform_workers))))
+            self.waveform_workers_spin.setVisible(True)
     
     def _load_indexing_settings(self):
         """加载块大小设置（索引固定为平衡模式，少于 500 文件不拆块已硬编码）"""

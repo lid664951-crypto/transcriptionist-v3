@@ -20,6 +20,7 @@ from .models import (
 from .connection import (
     DatabaseManager,
     get_db_manager,
+    get_database_backend,
     get_session,
     session_scope,
 )
@@ -46,6 +47,7 @@ __all__ = [
     # Connection
     "DatabaseManager",
     "get_db_manager",
+    "get_database_backend",
     "get_session",
     "session_scope",
     # Backup

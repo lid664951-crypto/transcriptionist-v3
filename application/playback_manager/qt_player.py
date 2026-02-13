@@ -40,10 +40,12 @@ class QtAudioPlayer(QObject):
         
         self._current_file: Optional[Path] = None
         self._volume = 0.8
+        self._last_emitted_position: int = -1
         self._audio_output.setVolume(self._volume)
         
         # 连接信号
         self._player.playbackStateChanged.connect(self._on_state_changed)
+        self._player.positionChanged.connect(self._on_player_position_changed)
         self._player.durationChanged.connect(self._on_duration_changed)
         self._player.errorOccurred.connect(self._on_error)
         self._player.mediaStatusChanged.connect(self._on_media_status)
@@ -139,11 +141,20 @@ class QtAudioPlayer(QObject):
     
     def seek(self, position_ms: int):
         """跳转到指定位置（毫秒）"""
-        self._player.setPosition(position_ms)
+        target = max(0, int(position_ms))
+        duration = self.get_duration()
+        if duration > 0:
+            target = min(duration, target)
+        self._player.setPosition(target)
+        self._emit_position(target, force=True)
     
     def skip(self, offset_ms: int):
         """相对跳转（毫秒，正数前进，负数后退）"""
-        new_pos = max(0, min(self.get_duration(), self.get_position() + offset_ms))
+        current = self.get_position()
+        duration = self.get_duration()
+        new_pos = max(0, current + int(offset_ms))
+        if duration > 0:
+            new_pos = min(duration, new_pos)
         self.seek(new_pos)
     
     def get_position(self) -> int:
@@ -156,8 +167,18 @@ class QtAudioPlayer(QObject):
     
     def _update_position(self):
         """定时更新位置"""
-        pos = self._player.position()
-        self.position_changed.emit(pos)
+        self._emit_position(self._player.position())
+
+    def _on_player_position_changed(self, pos: int):
+        """响应底层播放器位置变化（暂停态 seek/skip 也会触发）。"""
+        self._emit_position(pos)
+
+    def _emit_position(self, pos: int, force: bool = False):
+        value = max(0, int(pos))
+        if not force and value == self._last_emitted_position:
+            return
+        self._last_emitted_position = value
+        self.position_changed.emit(value)
     
     def _on_state_changed(self, state):
         """播放状态改变"""

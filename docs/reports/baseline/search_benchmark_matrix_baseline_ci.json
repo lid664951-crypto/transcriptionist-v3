@@ -1,0 +1,53 @@
+{
+  "threshold": {
+    "p95_total_ms_max": 220.0,
+    "p95_fuse_ms_max": 60.0,
+    "overlap_rate_min": 0.45
+  },
+  "records_list": [
+    10000,
+    20000
+  ],
+  "queries": 10,
+  "top_k": 100,
+  "stop_on_fail": true,
+  "results": [
+    {
+      "records": 10000,
+      "queries": 10,
+      "top_k": 100,
+      "lexical_p95_ms": 0.040000013541430235,
+      "semantic_p95_ms": 0.3041000018129125,
+      "fuse_p95_ms": 0.2342000079806894,
+      "total_p95_ms": 0.5015000060666353,
+      "overlap_avg": 0.949,
+      "overlap_p50": 0.96,
+      "overlap_p95": 1.0,
+      "pass_total_ms": true,
+      "pass_fuse_ms": true,
+      "pass_overlap": true,
+      "passed": true,
+      "elapsed_ms": 334.5860000117682
+    },
+    {
+      "records": 20000,
+      "queries": 10,
+      "top_k": 100,
+      "lexical_p95_ms": 0.0999000039882958,
+      "semantic_p95_ms": 0.3647999983513728,
+      "fuse_p95_ms": 0.3664999967440963,
+      "total_p95_ms": 0.6965999928070232,
+      "overlap_avg": 0.85,
+      "overlap_p50": 0.81,
+      "overlap_p95": 0.98,
+      "pass_total_ms": true,
+      "pass_fuse_ms": true,
+      "pass_overlap": true,
+      "passed": true,
+      "elapsed_ms": 668.4912000055192
+    }
+  ],
+  "failed_records": [],
+  "passed": true,
+  "generated_at_unix": 1770470903.1699748
+}

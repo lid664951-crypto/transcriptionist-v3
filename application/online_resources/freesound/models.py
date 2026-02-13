@@ -8,6 +8,7 @@ Based on Freesound API v2 documentation: https://freesound.org/docs/api/
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, List, Any
+import re
 from datetime import datetime
 
 
@@ -205,8 +206,12 @@ class FreesoundSound:
     num_downloads: int = 0
     created: Optional[datetime] = None
     previews: Optional[FreesoundPreview] = None
+    images: Dict[str, Any] = field(default_factory=dict)
     download_url: str = ""
     analysis: Optional[FreesoundAnalysis] = None
+    pack: str = ""
+    n_from_same_pack: int = 0
+    more_from_same_pack: str = ""
     
     # Translated fields (populated by AI translation)
     name_zh: Optional[str] = None
@@ -237,6 +242,19 @@ class FreesoundSound:
     def attribution_text(self) -> str:
         """Generate attribution text for this sound."""
         return f'"{self.name}" by {self.username} via Freesound.org, licensed under {self.license}'
+
+    @property
+    def pack_id(self) -> Optional[int]:
+        """Extract pack id from pack URI if present."""
+        if not self.pack:
+            return None
+        match = re.search(r"/packs/(\d+)/", self.pack)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
     
     @property
     def duration_formatted(self) -> str:
@@ -258,6 +276,28 @@ class FreesoundSound:
                 return f"{size:.1f} {unit}"
             size /= 1024
         return f"{size:.1f} TB"
+
+    @property
+    def waveform_url(self) -> str:
+        """Best available waveform image URL."""
+        if not isinstance(self.images, dict):
+            return ""
+        for key in ('waveform_m', 'waveform_l'):
+            value = self.images.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @property
+    def spectral_url(self) -> str:
+        """Best available spectral image URL."""
+        if not isinstance(self.images, dict):
+            return ""
+        for key in ('spectral_m', 'spectral_l'):
+            value = self.images.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
     
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> 'FreesoundSound':
@@ -293,7 +333,11 @@ class FreesoundSound:
             num_downloads=data.get('num_downloads', 0),
             created=created,
             previews=previews,
+            images=data.get('images', {}) if isinstance(data.get('images', {}), dict) else {},
             download_url=data.get('download', ''),
+            pack=data.get('pack', ''),
+            n_from_same_pack=data.get('n_from_same_pack', 0) or 0,
+            more_from_same_pack=data.get('more_from_same_pack', ''),
         )
 
 

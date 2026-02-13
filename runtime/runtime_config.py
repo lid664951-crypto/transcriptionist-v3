@@ -166,16 +166,26 @@ class RuntimeConfig:
         """
         # Determine Python paths
         if is_frozen:
-            # Frozen executable - Python is bundled
-            # PyInstaller puts everything in _internal
-            if internal_dir:
+            # Frozen executable (PyInstaller / Nuitka)
+            # PyInstaller may provide an internal runtime layout, while Nuitka usually does not.
+            py_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+
+            if internal_dir and (internal_dir / "python").exists():
                 python_home = internal_dir / "python"
+                python_executable = python_home / ("python.exe" if sys.platform == "win32" else "bin/python3")
                 python_lib = internal_dir / "lib"
-            else:
+                site_packages = python_lib / py_version / "site-packages"
+            elif (app_root / "python").exists():
                 python_home = app_root / "python"
-                python_lib = app_root / "python" / "lib"
-            python_executable = app_root / "python" / "python.exe" if sys.platform == "win32" else app_root / "python" / "bin" / "python3"
-            site_packages = python_lib / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+                python_executable = python_home / ("python.exe" if sys.platform == "win32" else "bin/python3")
+                python_lib = python_home / "lib"
+                site_packages = python_lib / py_version / "site-packages"
+            else:
+                # Nuitka/other frozen layout fallback: use current interpreter context
+                python_home = Path(sys.prefix)
+                python_executable = Path(sys.executable)
+                python_lib = Path(sys.prefix) / "Lib"
+                site_packages = Path(next((p for p in sys.path if "site-packages" in p), str(python_lib / "site-packages")))
         elif is_embedded:
             # Embedded Python runtime (not frozen, but using bundled Python)
             python_home = app_root / "runtime" / "python"
@@ -215,8 +225,10 @@ class RuntimeConfig:
             locale_dir = internal_dir / "locale"
             plugins_dir = internal_dir / "plugins"
         else:
-            # Normal paths
-            resources_dir = app_root / "resources"
+            # Normal/Nuitka paths
+            resources_dir = app_root / "ui" / "resources"
+            if not resources_dir.exists():
+                resources_dir = app_root / "resources"
             locale_dir = app_root / "locale"
             plugins_dir = app_root / "plugins"
         
@@ -264,7 +276,7 @@ class RuntimeConfig:
             "TRANSCRIPTIONIST_LOGS": str(paths.logs_dir),
         }
         
-        if is_embedded:
+        if is_embedded and not getattr(sys, "frozen", False):
             env_vars.update({
                 "PYTHONHOME": str(paths.python_home),
                 "PYTHONPATH": str(paths.site_packages),

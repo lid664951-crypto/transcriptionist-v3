@@ -10,7 +10,7 @@ API Documentation: https://freesound.org/docs/api/
 import asyncio
 import logging
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlencode
+from urllib.parse import quote_plus
 import aiohttp
 
 from .models import (
@@ -30,7 +30,7 @@ DEFAULT_FIELDS = [
     'id', 'name', 'description', 'username', 'license', 'license_url',
     'duration', 'channels', 'samplerate', 'bitdepth', 'bitrate', 'filesize',
     'type', 'tags', 'avg_rating', 'num_ratings', 'num_downloads', 'created',
-    'previews', 'download',
+    'previews', 'images', 'download', 'pack', 'n_from_same_pack', 'more_from_same_pack',
 ]
 
 
@@ -245,6 +245,7 @@ class FreesoundClient:
         self,
         query: str,
         options: Optional[FreesoundSearchOptions] = None,
+        group_by_pack: bool = False,
     ) -> FreesoundSearchResult:
         """
         Search for sounds by text query.
@@ -268,6 +269,9 @@ class FreesoundClient:
             'sort': options.sort,
             'fields': ','.join(DEFAULT_FIELDS),
         }
+
+        if group_by_pack:
+            params['group_by_pack'] = '1'
         
         # Add filter string if any filters specified
         filter_str = options.build_filter_string()
@@ -282,6 +286,209 @@ class FreesoundClient:
         
         logger.info(f"Freesound search returned {result.count} results")
         return result
+
+    async def get_pack(self, pack_id: int) -> Dict[str, Any]:
+        """
+        Get pack details by pack id.
+
+        Args:
+            pack_id: Freesound pack ID
+
+        Returns:
+            Pack detail dictionary from API
+        """
+        return await self._request('GET', f'/packs/{pack_id}/')
+
+    async def get_pack_sounds(
+        self,
+        pack_id: int,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> FreesoundSearchResult:
+        """
+        Get sounds from a specific pack.
+
+        Args:
+            pack_id: Freesound pack ID
+            page: Page number
+            page_size: Results per page
+
+        Returns:
+            FreesoundSearchResult with pack sounds
+        """
+        params = {
+            'page': str(page),
+            'page_size': str(page_size),
+            'fields': ','.join(DEFAULT_FIELDS),
+        }
+
+        data = await self._request('GET', f'/packs/{pack_id}/sounds/', params=params)
+        result = FreesoundSearchResult.from_api_response(data, page_size)
+        result.current_page = page
+        return result
+
+    async def search_packs(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Search packs by text query.
+
+        Args:
+            query: Search query string
+            page: Page number
+            page_size: Results per page
+
+        Returns:
+            Raw API response dictionary for packs search
+        """
+        params = {
+            'query': query,
+            'page': str(page),
+            'page_size': str(page_size),
+        }
+        return await self._request('GET', '/search/packs/', params=params)
+
+    @staticmethod
+    def _extract_cover_from_sound_data(sound_data: Dict[str, Any]) -> str:
+        """Extract a displayable image URL from sound payload if available."""
+        images = sound_data.get('images')
+        if not isinstance(images, dict):
+            return ""
+
+        for key in ('waveform_m', 'waveform_l', 'spectral_m', 'spectral_l'):
+            value = images.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    async def get_pack_cover(self, pack_id: int) -> str:
+        """Try to derive a visual cover for pack from its first sound waveform/spectral image."""
+        params = {
+            'page': '1',
+            'page_size': '1',
+            'fields': 'id,name,images,previews',
+        }
+        data = await self._request('GET', f'/packs/{pack_id}/sounds/', params=params)
+        results = data.get('results', [])
+        if not isinstance(results, list) or not results:
+            return ""
+        first = results[0]
+        if not isinstance(first, dict):
+            return ""
+        return self._extract_cover_from_sound_data(first)
+
+    async def get_trending_packs(self, limit: int = 6) -> List[Dict[str, Any]]:
+        """
+        Get trending packs using live Freesound data.
+
+        Strategy:
+        - Query multiple high-frequency categories with group_by_pack search.
+        - Aggregate candidate pack ids by score.
+        - Fetch pack details and best-effort cover.
+        """
+        if limit <= 0:
+            return []
+
+        seed_queries = [
+            'cinematic',
+            'ambience',
+            'foley',
+            'impact',
+            'ui',
+            'horror',
+        ]
+
+        pack_candidates: Dict[int, Dict[str, Any]] = {}
+        fetch_size = max(18, min(limit * 4, 40))
+
+        for query in seed_queries:
+            try:
+                options = FreesoundSearchOptions(
+                    query=query,
+                    page=1,
+                    page_size=fetch_size,
+                    sort='downloads_desc',
+                )
+                result = await self.search(query, options, group_by_pack=True)
+            except Exception as exc:
+                logger.debug(f"get_trending_packs seed '{query}' failed: {exc}")
+                continue
+
+            for sound in result.results:
+                pack_id = sound.pack_id
+                if not pack_id:
+                    continue
+
+                score = (
+                    float(sound.num_downloads or 0)
+                    + float(sound.n_from_same_pack or 0) * 20.0
+                    + float(sound.avg_rating or 0) * 120.0
+                )
+
+                existing = pack_candidates.get(pack_id)
+                if existing is None or score > existing.get('score', 0):
+                    pack_candidates[pack_id] = {
+                        'pack_id': pack_id,
+                        'query': query,
+                        'score': score,
+                    }
+
+        if not pack_candidates:
+            return []
+
+        sorted_candidates = sorted(
+            pack_candidates.values(),
+            key=lambda item: float(item.get('score', 0)),
+            reverse=True,
+        )
+
+        packs: List[Dict[str, Any]] = []
+        max_probe = min(len(sorted_candidates), max(limit * 3, 12))
+        for candidate in sorted_candidates[:max_probe]:
+            pack_id = int(candidate['pack_id'])
+            fallback_query = str(candidate.get('query', '')).strip()
+            try:
+                detail = await self.get_pack(pack_id)
+            except Exception as exc:
+                logger.debug(f"get_pack({pack_id}) failed: {exc}")
+                continue
+
+            title = str(detail.get('name', '') or '').strip() or f"Pack {pack_id}"
+            description = str(detail.get('description', '') or '').strip()
+            username = str(detail.get('username', '') or '').strip()
+            num_sounds = int(detail.get('num_sounds') or detail.get('num_sounds_in_pack') or 0)
+
+            source_url = ''
+            if username:
+                source_url = f"https://freesound.org/people/{username}/packs/{pack_id}/"
+            elif fallback_query:
+                source_url = f"https://freesound.org/search/?q={quote_plus(fallback_query)}"
+
+            # Use image-style cover for card UI (not waveform screenshot)
+            # Keep deterministic seed so the same pack keeps a stable cover.
+            seed = quote_plus(f"pack-{pack_id}-{fallback_query or title}")
+            cover = f"https://picsum.photos/seed/{seed}/640/360"
+
+            packs.append(
+                {
+                    'pack_id': pack_id,
+                    'title': title,
+                    'desc': description,
+                    'query': fallback_query or title,
+                    'cover': cover,
+                    'source_url': source_url,
+                    'sounds_count': num_sounds,
+                    'provider': 'freesound-live',
+                }
+            )
+
+            if len(packs) >= limit:
+                break
+
+        return packs
     
     async def get_sound(self, sound_id: int) -> FreesoundSound:
         """

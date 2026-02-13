@@ -204,6 +204,7 @@ class FreesoundSearchService:
         min_rating: Optional[float] = None,
         sort: str = 'score',
         use_cache: bool = True,
+        group_by_pack: bool = False,
     ) -> FreesoundSearchResult:
         """
         Search for sounds with automatic translation.
@@ -246,7 +247,7 @@ class FreesoundSearchService:
             options.license_types = self.LICENSE_PRESETS[license_preset]
         
         # Check cache
-        cache_key = self._get_cache_key(options)
+        cache_key = f"{self._get_cache_key(options)}|group_by_pack:{int(group_by_pack)}"
         if use_cache and cache_key in self._cache:
             cached = self._cache[cache_key]
             if not cached.is_expired:
@@ -254,7 +255,7 @@ class FreesoundSearchService:
                 return cached.result
         
         # Perform search
-        result = await self.client.search(translated_query, options)
+        result = await self.client.search(translated_query, options, group_by_pack=group_by_pack)
         
         # Translate results
         if result.results:

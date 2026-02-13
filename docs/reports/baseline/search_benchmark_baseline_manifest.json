@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "ci": {
+      "baseline_json": "docs\\reports\\baseline\\search_benchmark_matrix_baseline_ci.json",
+      "source_matrix_json": "docs\\reports\\search_benchmark_matrix_local_baseline_smoke.json",
+      "source_tag": "local_baseline_smoke",
+      "updated_at_unix": 1770470903.3237464
+    }
+  },
+  "updated_at_unix": 1770470903.3237464
+}

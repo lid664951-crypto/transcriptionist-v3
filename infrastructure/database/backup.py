@@ -27,18 +27,26 @@ class BackupManager:
     - Restore from backup
     """
     
-    def __init__(self, db_path: Path, backup_dir: Path, max_backups: int = 7):
+    def __init__(
+        self,
+        db_path: Optional[Path],
+        backup_dir: Path,
+        max_backups: int = 7,
+        backend: str = "sqlite",
+    ):
         """
         Initialize the backup manager.
         
         Args:
-            db_path: Path to the database file
+            db_path: Path to the SQLite database file
             backup_dir: Directory to store backups
             max_backups: Maximum number of backups to keep
+            backend: Database backend type
         """
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path is not None else None
         self.backup_dir = Path(backup_dir)
         self.max_backups = max_backups
+        self.backend = (backend or "sqlite").strip().lower()
     
     def create_backup(self) -> Optional[Path]:
         """
@@ -47,6 +55,10 @@ class BackupManager:
         Returns:
             Path: Path to the backup file, or None if failed
         """
+        if self.backend != "sqlite" or self.db_path is None:
+            logger.warning("Database backup is only supported for SQLite backend")
+            return None
+
         if not self.db_path.exists():
             logger.warning(f"Database file not found: {self.db_path}")
             return None
@@ -128,6 +140,10 @@ class BackupManager:
         Returns:
             bool: True if restored successfully
         """
+        if self.backend != "sqlite" or self.db_path is None:
+            logger.error("Database restore is only supported for SQLite backend")
+            return False
+
         if not backup_path.exists():
             logger.error(f"Backup file not found: {backup_path}")
             return False
@@ -164,16 +180,19 @@ def get_backup_manager() -> BackupManager:
     global _backup_manager
     
     if _backup_manager is None:
-        from transcriptionist_v3.runtime.runtime_config import get_runtime_config
         from transcriptionist_v3.core.config import get_config
-        
-        config = get_runtime_config()
+        from transcriptionist_v3.infrastructure.database.connection import get_db_manager
+
+        db_manager = get_db_manager()
         max_backups = get_config("backup.max_backups", 7)
-        
+        from transcriptionist_v3.runtime.runtime_config import get_runtime_config
+        runtime_config = get_runtime_config()
+
         _backup_manager = BackupManager(
-            db_path=config.paths.database_dir / "transcriptionist.db",
-            backup_dir=config.paths.backups_dir,
-            max_backups=max_backups
+            db_path=db_manager.db_path,
+            backup_dir=runtime_config.paths.backups_dir,
+            max_backups=max_backups,
+            backend=db_manager.backend,
         )
     
     return _backup_manager

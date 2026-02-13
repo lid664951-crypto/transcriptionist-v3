@@ -21,7 +21,7 @@ from qfluentwidgets import (
     FluentIcon, CardWidget, TitleLabel, SubtitleLabel,
     BodyLabel, CaptionLabel, ListWidget,
     TransparentToolButton, TableWidget, SwitchButton,
-    SegmentedWidget, IconWidget, TextEdit, ProgressBar
+    SegmentedWidget, IconWidget, TextEdit, ProgressBar, isDarkTheme
 )
 
 # Architecture refactoring: use centralized utilities and services
@@ -30,6 +30,7 @@ from transcriptionist_v3.ui.utils.workers import cleanup_thread
 from transcriptionist_v3.ui.workers.naming_workers import GlossaryLoadWorker
 from transcriptionist_v3.application.naming_manager.glossary import GlossaryManager
 from transcriptionist_v3.application.naming_manager.cleaning import CleaningManager, CleaningRule
+from transcriptionist_v3.ui.themes.theme_tokens import get_theme_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,85 @@ class NamingRulesPage(QWidget):
         
         self._init_backend()
         self._init_ui()
+        self._apply_theme_tokens()
         self._update_glossary_table()  # 初始加载表格
+
+    def _apply_theme_tokens(self):
+        tokens = get_theme_tokens(isDarkTheme())
+        self.setStyleSheet(
+            f"""
+QWidget#namingRulesPage {{
+    background-color: {tokens.window_bg};
+}}
+
+QWidget#namingRulesPage TitleLabel,
+QWidget#namingRulesPage SubtitleLabel,
+QWidget#namingRulesPage BodyLabel {{
+    color: {tokens.text_primary};
+    background: transparent;
+}}
+
+QWidget#namingRulesPage CaptionLabel {{
+    color: {tokens.text_muted};
+    background: transparent;
+}}
+
+QWidget#namingRulesPage SwitchButton,
+QWidget#namingRulesPage SwitchButton QLabel,
+QWidget#namingRulesPage ListWidget,
+QWidget#namingRulesPage QTableWidget,
+QWidget#namingRulesPage TableWidget,
+QWidget#namingRulesPage QTableWidget QLabel,
+QWidget#namingRulesPage TableWidget QLabel {{
+    color: {tokens.text_muted};
+}}
+
+QWidget#namingRulesPage BodyLabel,
+QWidget#namingRulesPage SubtitleLabel,
+QWidget#namingRulesPage TitleLabel {{
+    color: {tokens.text_primary};
+}}
+
+QWidget#namingRulesPage CardWidget {{
+    background-color: {tokens.surface_0};
+    border: 1px solid {tokens.border};
+    border-radius: 12px;
+}}
+
+QWidget#namingRulesPage SegmentedWidget,
+QWidget#namingRulesPage QListWidget,
+QWidget#namingRulesPage QTableWidget,
+QWidget#namingRulesPage TableWidget,
+QWidget#namingRulesPage TextEdit,
+QWidget#namingRulesPage LineEdit,
+QWidget#namingRulesPage ComboBox {{
+    background-color: {tokens.surface_0};
+    color: {tokens.text_primary};
+    border: 1px solid {tokens.border};
+    border-radius: 8px;
+}}
+
+QWidget#namingRulesPage QHeaderView::section {{
+    background-color: {tokens.surface_1};
+    color: {tokens.text_secondary};
+    border: none;
+    border-bottom: 1px solid {tokens.border};
+    padding: 7px 8px;
+    font-weight: 600;
+}}
+
+QWidget#namingRulesPage QScrollBar:vertical,
+QWidget#namingRulesPage QScrollBar:horizontal {{
+    background: transparent;
+}}
+
+QWidget#namingRulesPage QScrollBar::handle:vertical,
+QWidget#namingRulesPage QScrollBar::handle:horizontal {{
+    background: {tokens.border_soft};
+    border-radius: 6px;
+}}
+"""
+        )
     
     def _init_backend(self):
         """初始化后端服务"""

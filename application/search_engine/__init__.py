@@ -15,6 +15,17 @@ from transcriptionist_v3.application.search_engine.search_engine import (
     QueryCache,
     TFIDFScorer,
 )
+from transcriptionist_v3.application.search_engine.query_orchestrator import (
+    QueryPlan,
+    QueryOrchestrator,
+    QueryObservation,
+    QueryOrchestratorResult,
+    OrchestratedItem,
+)
+from transcriptionist_v3.application.search_engine.benchmark_gate_status import (
+    BenchmarkGateSnapshot,
+    BenchmarkGateStatusService,
+)
 
 __all__ = [
     'QueryParser',
@@ -24,4 +35,11 @@ __all__ = [
     'SearchEngine',
     'QueryCache',
     'TFIDFScorer',
+    'QueryPlan',
+    'QueryOrchestrator',
+    'QueryObservation',
+    'QueryOrchestratorResult',
+    'OrchestratedItem',
+    'BenchmarkGateSnapshot',
+    'BenchmarkGateStatusService',
 ]

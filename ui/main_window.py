@@ -5,18 +5,22 @@
 
 import sys
 import logging
+import re
 from pathlib import Path
+from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
-    QStackedWidget, QTabWidget, QSystemTrayIcon, QMenu
+    QStackedWidget, QTabWidget, QSystemTrayIcon, QMenu,
+    QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox,
+    QComboBox
 )
-from PySide6.QtGui import QFont, QColor, QIcon
+from PySide6.QtGui import QFont, QColor, QIcon, QKeySequence, QShortcut
 
 from qfluentwidgets import (
     setTheme, Theme, setThemeColor, isDarkTheme,
-    qconfig, FluentIcon, TransparentToolButton
+    qconfig, FluentIcon, TransparentToolButton, BodyLabel, CaptionLabel
 )
 from qframelesswindow import FramelessWindow, StandardTitleBar
 
@@ -27,6 +31,7 @@ from .panels.batch_center_panel import BatchCenterPanel
 from .panels.ai_inspector_panel import AIInspectorPanel
 from .panels.timeline_panel import TimelinePanel
 from .panels.audio_files_panel import AudioFilesPanel
+from .themes.theme_tokens import get_theme_tokens, build_runtime_token_qss
 from .widgets.qt_waveform_preview import WaveformPreviewWidget
 
 # 导入核心页面
@@ -44,6 +49,11 @@ from .pages.settings_page_qt import SettingsPage
 
 from .components.player_bar import PlayerBar
 from ..application.playback_manager.qt_player import QtAudioPlayer
+from ..application.search_engine.benchmark_gate_status import (
+    BenchmarkGateSnapshot,
+    BenchmarkGateStatusService,
+)
+from ..core.config import AppConfig
 from ..core.fonts import apply_app_font, get_font_family
 
 logger = logging.getLogger(__name__)
@@ -53,9 +63,14 @@ class TranscriptionistWindow(FramelessWindow):
     
     def __init__(self):
         super().__init__()
+
+        self._benchmark_gate_service = BenchmarkGateStatusService()
+        self._benchmark_gate_snapshot: Optional[BenchmarkGateSnapshot] = None
+        self._realtime_index_full_text = "实时索引：未启动"
+        self._benchmark_gate_full_text = "性能闸门：暂无报告"
         
         # 1. 窗口基础设置
-        self.setWindowTitle("音译家 AI 音效管理工具 v1.1.1")
+        self.setWindowTitle("音译家 AI 音效管理工具 v1.2.0")
         self.resize(1440, 900)
         self.setMinimumSize(1100, 750)
         
@@ -79,7 +94,7 @@ class TranscriptionistWindow(FramelessWindow):
         
         # 2. 主题与特效
         setThemeColor("#3399ff")
-        setTheme(Theme.DARK)
+        self._apply_user_theme_preference()
         
         # 禁用 Mica 特效以保证 Win10/Win11 跨平台颜色一致性
         # Mica 特效会让 Win11 窗口背景继承系统主题色，导致深色主题显示异常
@@ -98,8 +113,14 @@ class TranscriptionistWindow(FramelessWindow):
         # 4. 初始化 UI 与页面
         self._setup_ui()
         self._init_pages()
+        self._setup_layout_shortcuts()
+        self._setup_player_shortcuts()
         self._setup_player_connections()
         self._connect_player_bar()
+        self._refresh_benchmark_gate_status()
+
+        # 全局键盘事件过滤（播放器快捷键）
+        QApplication.instance().installEventFilter(self)
         
         # 5. 样式应用
         self._apply_theme_style()
@@ -118,6 +139,15 @@ class TranscriptionistWindow(FramelessWindow):
         self._customTitleBar = StandardTitleBar(self)
         self.setTitleBar(self._customTitleBar)
         self._customTitleBar.raise_()
+        self._customTitleBar.setFixedHeight(40)
+
+        # 隐藏标准标题栏自带图标/标题，避免与自定义文本重复导致视觉杂乱
+        builtin_icon_label = getattr(self._customTitleBar, "iconLabel", None)
+        if builtin_icon_label is not None:
+            builtin_icon_label.hide()
+        builtin_title_label = getattr(self._customTitleBar, "titleLabel", None)
+        if builtin_title_label is not None:
+            builtin_title_label.hide()
         
         # 设置标题栏文本颜色和字体
         from PySide6.QtGui import QPalette
@@ -146,21 +176,32 @@ class TranscriptionistWindow(FramelessWindow):
         self._customTitleBar.closeBtn.setHoverBackgroundColor(QColor(232, 17, 35))
         
         # 添加标题文本标签
-        from PySide6.QtWidgets import QLabel
-        self.titleLabel = QLabel("音译家 AI 音效管理工具 v1.1.1", self)
-        self.titleLabel.setStyleSheet("""
-            QLabel {
-                color: rgb(200, 200, 200);
-                font-size: 12px;
-                padding-left: 10px;
-                background: transparent;
-            }
-        """)
+        self.titleLabel = BodyLabel("音译家 AI 音效管理工具 v1.2.0", self)
+        self.titleLabel.setObjectName("titleBarAppTitle")
+
+        self.realtimeIndexLabel = CaptionLabel("索引: 待机", self)
+        self.realtimeIndexLabel.setObjectName("titleBarRealtimeIndexLabel")
+        self._set_title_status_color(self.realtimeIndexLabel, "idle")
+        self.realtimeIndexDetailBtn = TransparentToolButton(FluentIcon.INFO, self)
+        self.realtimeIndexDetailBtn.setObjectName("titleBarRealtimeDetailBtn")
+        self.realtimeIndexDetailBtn.setFixedSize(24, 24)
+        self.realtimeIndexDetailBtn.setToolTip("查看实时索引任务详情")
+        self.realtimeIndexDetailBtn.clicked.connect(self._show_realtime_index_detail)
+
+        self.benchmarkGateLabel = CaptionLabel("闸门: 暂无", self)
+        self.benchmarkGateLabel.setObjectName("titleBarBenchmarkGateLabel")
+        self._set_title_status_color(self.benchmarkGateLabel, "idle")
+        self.benchmarkGateDetailBtn = TransparentToolButton(FluentIcon.DOCUMENT, self)
+        self.benchmarkGateDetailBtn.setObjectName("titleBarBenchmarkDetailBtn")
+        self.benchmarkGateDetailBtn.setFixedSize(24, 24)
+        self.benchmarkGateDetailBtn.setToolTip("查看性能闸门报告详情")
+        self.benchmarkGateDetailBtn.clicked.connect(self._show_benchmark_gate_detail)
         
         # Add Help Button with Dropdown Menu
         from qfluentwidgets import RoundMenu, Action
         self.helpBtn = TransparentToolButton(FluentIcon.HELP, self)
-        self.helpBtn.setFixedSize(46, 32)
+        self.helpBtn.setObjectName("titleBarHelpBtn")
+        self.helpBtn.setFixedSize(36, 30)
         self.helpBtn.clicked.connect(self._show_help_menu)
         
         # Create Help Menu (空壳，暂不实现功能)
@@ -172,7 +213,8 @@ class TranscriptionistWindow(FramelessWindow):
         
         # Add Settings Button
         self.settingsBtn = TransparentToolButton(FluentIcon.SETTING, self)
-        self.settingsBtn.setFixedSize(46, 32)
+        self.settingsBtn.setObjectName("titleBarSettingsBtn")
+        self.settingsBtn.setFixedSize(36, 30)
         self.settingsBtn.clicked.connect(self._toggle_settings)
         
         # 将控件插入到标题栏布局中
@@ -181,16 +223,163 @@ class TranscriptionistWindow(FramelessWindow):
         
         layout = self._customTitleBar.hBoxLayout
         if layout:
+            layout.setSpacing(6)
             # 标题栏图标通常在索引0，后面是一个弹性空间（spacer）
             # 我们在索引1插入标题标签（图标之后）
             layout.insertWidget(1, self.titleLabel)
+            layout.insertWidget(2, self.realtimeIndexLabel)
+            layout.insertWidget(3, self.benchmarkGateLabel)
             
-            # 窗口控制按钮（min/max/close）在最后，我们要在它们之前插入帮助和设置按钮
-            # 由于刚才插入了titleLabel，现在count增加了1
-            # 最后3个是窗口控制按钮，所以在 count-3 位置插入
+            # 窗口控制按钮（min/max/close）在最后，我们要在它们之前插入状态详情/帮助/设置按钮
             count = layout.count()
-            layout.insertWidget(count - 3, self.helpBtn)
-            layout.insertWidget(count - 2, self.settingsBtn)  # 注意：插入helpBtn后count又增加了1
+            insert_pos = max(0, count - 3)
+            layout.insertWidget(insert_pos, self.realtimeIndexDetailBtn)
+            layout.insertWidget(insert_pos + 1, self.benchmarkGateDetailBtn)
+            layout.insertWidget(insert_pos + 2, self.helpBtn)
+            layout.insertWidget(insert_pos + 3, self.settingsBtn)
+
+        self._set_title_detail_button_state(self.realtimeIndexDetailBtn, "idle")
+        self._set_title_detail_button_state(self.benchmarkGateDetailBtn, "unknown")
+        self._sync_titlebar_status_tooltips()
+        self._update_titlebar_compact_state()
+
+    def _apply_user_theme_preference(self):
+        """根据配置应用主题模式。"""
+        theme_pref = str(AppConfig.get("ui.theme", "dark") or "dark").strip().lower()
+        if theme_pref == "light":
+            setTheme(Theme.LIGHT)
+        else:
+            setTheme(Theme.DARK)
+
+    def _set_title_status_color(self, label: CaptionLabel, state: str):
+        """统一设置标题栏状态标签颜色。"""
+        tokens = getattr(self, "_theme_tokens", None)
+        success = getattr(tokens, "success", "#57C26F")
+        warning = getattr(tokens, "warning", "#F0B44D")
+        danger = getattr(tokens, "danger", "#E26262")
+        muted = getattr(tokens, "text_muted", "#8E99AD")
+
+        palette = {
+            "running": success,
+            "pass": success,
+            "error": danger,
+            "fail": danger,
+            "pending": warning,
+        }
+        color_hex = palette.get((state or "").lower(), muted)
+        label.setTextColor(QColor(color_hex))
+
+    def _set_title_detail_button_state(self, button: TransparentToolButton, state: str):
+        """给标题栏详情按钮设置状态属性，供 QSS 着色。"""
+        normalized = (state or "unknown").strip().lower()
+        button.setProperty("statusState", normalized)
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+    def _sync_titlebar_status_tooltips(self):
+        """同步标题栏详情按钮 tooltip，窄屏时仍可查看完整信息。"""
+        if hasattr(self, "realtimeIndexDetailBtn") and self.realtimeIndexDetailBtn is not None:
+            detail = self._realtime_index_full_text or "实时索引：状态未知"
+            self.realtimeIndexDetailBtn.setToolTip(f"实时索引详情\n{detail}")
+        if hasattr(self, "benchmarkGateDetailBtn") and self.benchmarkGateDetailBtn is not None:
+            detail = self._benchmark_gate_full_text or "性能闸门：暂无报告"
+            self.benchmarkGateDetailBtn.setToolTip(f"性能闸门详情\n{detail}")
+
+    def _apply_theme_to_message_box(self, box):
+        """让 QMessageBox 跟随当前主题，避免深浅色混乱。"""
+        tokens = get_theme_tokens(isDarkTheme())
+        box.setObjectName("appThemedMessageBox")
+        box.setStyleSheet(
+            f"""
+QMessageBox#appThemedMessageBox,
+QMessageBox#appThemedMessageBox QWidget {{
+    background-color: {tokens.surface_0};
+    color: {tokens.text_primary};
+}}
+
+QMessageBox#appThemedMessageBox QLabel {{
+    background: transparent;
+    color: {tokens.text_primary};
+    font-size: 13px;
+}}
+
+QMessageBox#appThemedMessageBox QFrame {{
+    background-color: {tokens.surface_0};
+}}
+
+QMessageBox#appThemedMessageBox QDialogButtonBox {{
+    background-color: {tokens.surface_1};
+    border-top: 1px solid {tokens.border};
+}}
+
+QMessageBox#appThemedMessageBox QPushButton {{
+    min-width: 86px;
+    min-height: 30px;
+    border-radius: 6px;
+    border: 1px solid {tokens.border};
+    background-color: {tokens.surface_2};
+    color: {tokens.text_primary};
+    padding: 4px 12px;
+}}
+
+QMessageBox#appThemedMessageBox QPushButton:hover {{
+    background-color: {tokens.card_hover};
+    border-color: {tokens.border_soft};
+}}
+
+QMessageBox#appThemedMessageBox QPushButton:pressed {{
+    background-color: {tokens.card_selected};
+    border-color: {tokens.accent};
+}}
+
+QMessageBox#appThemedMessageBox QTextEdit,
+QMessageBox#appThemedMessageBox QPlainTextEdit {{
+    background-color: {tokens.surface_1};
+    color: {tokens.text_primary};
+    border: 1px solid {tokens.border};
+}}
+"""
+        )
+
+    def _update_titlebar_compact_state(self):
+        """根据窗口宽度折叠标题栏状态文案（保留图标与颜色）。"""
+        width = self.width() if self.width() > 0 else self.sizeHint().width()
+        show_benchmark_text = width >= 1500
+        show_realtime_text = width >= 1320
+
+        if hasattr(self, "realtimeIndexLabel") and self.realtimeIndexLabel is not None:
+            self.realtimeIndexLabel.setVisible(show_realtime_text)
+        if hasattr(self, "benchmarkGateLabel") and self.benchmarkGateLabel is not None:
+            self.benchmarkGateLabel.setVisible(show_benchmark_text)
+
+    @staticmethod
+    def _compact_realtime_index_text(text: str, state: str) -> str:
+        """将实时索引状态压缩为标题栏短文案。"""
+        state_map = {
+            "running": "索引: 运行中",
+            "pending": "索引: 等待中",
+            "error": "索引: 异常",
+            "idle": "索引: 待机",
+            "unknown": "索引: 未知",
+        }
+
+        normalized = (state or "").strip().lower()
+        if normalized == "running":
+            match = re.search(r"(\d+\s*/\s*\d+)", text or "")
+            if match:
+                return f"索引: {match.group(1).replace(' ', '')}"
+        return state_map.get(normalized, "索引: 待机")
+
+    @staticmethod
+    def _compact_benchmark_gate_text(snapshot: BenchmarkGateSnapshot) -> str:
+        """将性能闸门摘要压缩为标题栏短文案。"""
+        status_map = {
+            "pass": "闸门: 通过",
+            "fail": "闸门: 失败",
+            "error": "闸门: 异常",
+            "unknown": "闸门: 暂无",
+        }
+        return status_map.get((snapshot.status or "").lower(), "闸门: 暂无")
 
     def _setup_ui(self):
         """构建三栏式工作站布局"""
@@ -233,14 +422,10 @@ class TranscriptionistWindow(FramelessWindow):
         self.workstation.add_left_widget(self.resource_panel, "RESOURCES")
         
         self.libraryInterface = LibraryPage(self)
-        self.libraryInterface.setStyleSheet("#libraryPage { background-color: #1e1e1e; }")
         self.projectsInterface = ProjectsPage(self)
-        self.projectsInterface.setStyleSheet("#projectsPage { background-color: #1e1e1e; }")
         self.onlineResourcesInterface = OnlineResourcesPage(self)
-        self.onlineResourcesInterface.setStyleSheet("#onlineResourcesPage { background-color: #1e1e1e; }")
-        
+
         self.tagsInterface = TagsPage(self)
-        self.tagsInterface.setStyleSheet("#tagsPage { background-color: #1e1e1e; }")
         
         self.resource_panel.add_resource_tab(self.libraryInterface, "", "库")
         self.resource_panel.add_resource_tab(self.tagsInterface, "", "标签") # Added Tags tab
@@ -249,10 +434,9 @@ class TranscriptionistWindow(FramelessWindow):
         
         # --- B. 中央展示区 (Processing Center) ---
         self.batch_center = BatchCenterPanel()
-        
+
         # 新增：音效文件面板（放在AI翻译左侧）
         self.audioFilesPanel = AudioFilesPanel(self)
-        self.audioFilesPanel.setStyleSheet("#audioFilesPanel { background-color: #1e1e1e; }")
         self.batch_center.add_batch_tab(self.audioFilesPanel, "音效列表")
         # 将库页面作为音效列表的数据提供者（懒加载使用全局索引 -> 文件信息）
         self.audioFilesPanel.set_data_provider(self.libraryInterface.get_file_info_by_index)
@@ -262,28 +446,24 @@ class TranscriptionistWindow(FramelessWindow):
         # self.audioEditorInterface.setStyleSheet("#audioEditorPage { background-color: #1e1e1e; }")
         
         self.aiTranslateInterface = AITranslatePage(self)
-        self.aiTranslateInterface.setStyleSheet("#aiTranslatePage { background-color: #1e1e1e; }")
         # Connect translation applied signal to library page
         self.aiTranslateInterface.translation_applied.connect(self.libraryInterface.on_translation_applied)
         # self.toolboxInterface = ToolboxPage(self) # 移除
         
         self.aiSearchInterface = AISearchPage(self)
-        self.aiSearchInterface.setStyleSheet("#aiSearchPage { background-color: #1e1e1e; }")
-        
+
         self.aiGenerationInterface = AIGenerationPage(self)
-        self.aiGenerationInterface.setStyleSheet("#aiGenerationPage { background-color: #1e1e1e; }")
         
         # self.batch_center.add_batch_tab(self.audioEditorInterface, "AI 音频编辑")  # TODO: 暂时禁用
         self.batch_center.add_batch_tab(self.aiTranslateInterface, "AI 批量翻译")
         self.batch_center.add_batch_tab(self.aiSearchInterface, "AI 智能检索")
-        self.batch_center.add_batch_tab(self.aiGenerationInterface, "AI 音乐工坊 实验室功能")
+        self.batch_center.add_batch_tab(self.aiGenerationInterface, "AI 音效工坊")
         
         self.workstation.add_center_tab(self.batch_center, "Main")
         
         # --- C. 其他功能整合进中央面板 (原右侧面板内容) ---
         # self.namingRulesInterface = NamingRulesPage(self) # 用户要求移除，因为已在AI翻译中集成
         self.settingsInterface = SettingsPage(self)
-        self.settingsInterface.setStyleSheet("#settingsPage { background-color: #1e1e1e; }")
         self.centralStack.addWidget(self.settingsInterface) # Index 1
         
         # self.batch_center.add_batch_tab(self.namingRulesInterface, "命名规则")
@@ -309,6 +489,10 @@ class TranscriptionistWindow(FramelessWindow):
         self.libraryInterface.files_checked.connect(self.aiSearchInterface.update_selection) # Connect Library -> AI Search
         self.libraryInterface.request_ai_translate.connect(lambda: self.batch_center.tabs.setCurrentIndex(1))  # Tab 1 = AI翻译
         self.libraryInterface.request_ai_search.connect(lambda: self.batch_center.tabs.setCurrentIndex(2)) # Tab 2 = AI检索
+        if hasattr(self.libraryInterface, "realtime_index_status_changed"):
+            self.libraryInterface.realtime_index_status_changed.connect(self._on_realtime_index_status_changed)
+        else:
+            logger.warning("LibraryPage missing realtime_index_status_changed signal; fallback status mode enabled")
         
         # 新增：库板块文件夹点击 -> 音效文件面板
         self.libraryInterface.folder_clicked.connect(self._on_folder_clicked)
@@ -327,7 +511,7 @@ class TranscriptionistWindow(FramelessWindow):
         self.aiTranslateInterface.request_stop_player.connect(self._audio_player.unload)
         
         self.onlineResourcesInterface.play_clicked.connect(self._on_play_file)
-        self.settingsInterface.theme_changed.connect(lambda _: self._apply_theme_style())
+        self.settingsInterface.theme_changed.connect(self._on_theme_changed)
         
         
         # Freesound Send to AI
@@ -373,21 +557,47 @@ class TranscriptionistWindow(FramelessWindow):
             logger.error(f"Failed to handle tags batch update: {e}")
 
     def _apply_theme_style(self):
-        """应用专业深色主题样式"""
+        """应用 Fluent 主题样式与运行时 Token。"""
         # 加载 QSS 文件
         from .utils.resources import get_style_path
-        qss_path = get_style_path("workstation_dark.qss")
+
+        qss_path = get_style_path("workstation_fluent.qss")
+        tokens = get_theme_tokens(isDarkTheme())
+        token_qss = build_runtime_token_qss(tokens)
+        self._theme_tokens = tokens
+
         if qss_path.exists():
             with open(qss_path, 'r', encoding='utf-8') as f:
-                self.setStyleSheet(f.read())
-                logger.info("Loaded workstation_dark.qss theme")
+                base_qss = f.read()
+                self.setStyleSheet(f"{base_qss}\n\n/* runtime token overrides */\n{token_qss}")
+                logger.info("Loaded workstation_fluent.qss theme")
         else:
             # Fallback 内联样式
-            bg_color = "#1a1a1a"
-            self.setStyleSheet(f"TranscriptionistWindow {{ background-color: {bg_color}; color: #eee; }}")
+            fallback_qss = (
+                f"TranscriptionistWindow {{ background-color: {tokens.window_bg}; "
+                f"color: {tokens.text_primary}; }}"
+            )
+            self.setStyleSheet(f"{fallback_qss}\n{token_qss}")
+
+        if hasattr(self, "audioFilesPanel") and self.audioFilesPanel is not None:
+            try:
+                self.audioFilesPanel.apply_theme_tokens(is_dark=isDarkTheme())
+            except Exception as e:
+                logger.debug(f"AudioFilesPanel apply_theme_tokens skipped: {e}")
         
         # 标题栏特殊处理
-        self._customTitleBar.setStyleSheet("StandardTitleBar { background-color: #1a1a1a; border: none; }")
+        self._customTitleBar.setStyleSheet(
+            f"StandardTitleBar {{ background-color: {tokens.surface_0}; border: none; }}"
+        )
+
+    def _on_theme_changed(self, mode: str):
+        """响应设置页主题切换。"""
+        normalized = str(mode or "dark").strip().lower()
+        if normalized == "light":
+            setTheme(Theme.LIGHT)
+        else:
+            setTheme(Theme.DARK)
+        self._apply_theme_style()
 
         
     def _on_play_file(self, file_path: str):
@@ -584,10 +794,203 @@ class TranscriptionistWindow(FramelessWindow):
         self._audio_player.duration_changed.connect(self.waveformPreview.set_duration)
         self._audio_player.media_ended.connect(self._on_media_ended)
 
+    def _on_realtime_index_status_changed(self, text: str, state: str):
+        """同步库页实时索引状态到主窗口标题栏。"""
+        if hasattr(self, "realtimeIndexLabel") and self.realtimeIndexLabel is not None:
+            self._realtime_index_full_text = text or "实时索引：状态未知"
+            self.realtimeIndexLabel.setText(self._compact_realtime_index_text(text, state))
+            self.realtimeIndexLabel.setToolTip(self._realtime_index_full_text)
+            self._set_title_status_color(self.realtimeIndexLabel, state)
+            self._set_title_detail_button_state(self.realtimeIndexDetailBtn, state)
+            self._sync_titlebar_status_tooltips()
+
+    def _show_realtime_index_detail(self):
+        """显示实时索引任务详情。"""
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            from transcriptionist_v3.infrastructure.database.connection import session_scope
+            from transcriptionist_v3.infrastructure.database.models import Job
+
+            lines = []
+            summary = self._realtime_index_full_text if self._realtime_index_full_text else "实时索引：状态未知"
+            lines.append(summary)
+
+            with session_scope() as session:
+                rows = (
+                    session.query(Job)
+                    .filter(Job.job_type == "index")
+                    .order_by(Job.created_at.desc())
+                    .limit(8)
+                    .all()
+                )
+                for job in rows:
+                    params = job.params or {}
+                    if params.get("source") != "file_watcher":
+                        continue
+
+                    total = int(job.total or 0)
+                    processed = int(job.processed or 0)
+                    failed = int(job.failed or 0)
+                    progress = f"{processed}/{total}" if total > 0 else str(processed)
+                    line = f"#{job.id} [{job.status}] 进度 {progress} 失败 {failed}"
+
+                    error = (job.error or "").strip()
+                    if error:
+                        line += f" | 错误: {error[:90]}"
+                    lines.append(line)
+
+            if len(lines) <= 1:
+                lines.append("暂无由文件监控触发的索引任务。")
+
+            box = QMessageBox(self)
+            box.setWindowTitle("实时索引任务详情")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText("\n".join(lines))
+            self._apply_theme_to_message_box(box)
+            box.exec()
+        except Exception as e:
+            from qfluentwidgets import InfoBar, InfoBarPosition
+
+            InfoBar.error(
+                title="无法读取任务详情",
+                content=str(e),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500,
+            )
+
+    def _setup_layout_shortcuts(self):
+        """工作区布局快捷键（v1.2.0）"""
+        self.shortcut_split = QShortcut(QKeySequence("Ctrl+0"), self)
+        self.shortcut_split.activated.connect(self.workstation.restore_split)
+
+        self.shortcut_library_focus = QShortcut(QKeySequence("Ctrl+1"), self)
+        self.shortcut_library_focus.activated.connect(self.workstation.focus_library)
+
+        self.shortcut_workbench_focus = QShortcut(QKeySequence("Ctrl+2"), self)
+        self.shortcut_workbench_focus.activated.connect(self.workstation.focus_workbench)
+
+        self.workstation.layout_mode_changed.connect(
+            lambda mode: logger.info(f"Workstation layout mode changed to: {mode}")
+        )
+
+    def _setup_player_shortcuts(self):
+        """播放器快捷键由 eventFilter 统一处理（空格/左右键）。"""
+        pass
+
+    def eventFilter(self, watched, event):
+        """全局快捷键过滤：空格播放/暂停，左右键快进快退。"""
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(watched, event)
+
+        if not self.isVisible() or not self.isActiveWindow():
+            return super().eventFilter(watched, event)
+
+        if event.modifiers() != Qt.KeyboardModifier.NoModifier:
+            return super().eventFilter(watched, event)
+
+        if self._is_focus_on_text_or_navigation_widget():
+            return super().eventFilter(watched, event)
+
+        if event.key() == Qt.Key.Key_Space:
+            self._audio_player.toggle_play_pause()
+            return True
+
+        if event.key() == Qt.Key.Key_Left:
+            self._audio_player.skip(-5000)
+            return True
+
+        if event.key() == Qt.Key.Key_Right:
+            self._audio_player.skip(5000)
+            return True
+
+        return super().eventFilter(watched, event)
+
+    def _is_focus_on_text_or_navigation_widget(self) -> bool:
+        """判断当前焦点是否在文本输入控件上。"""
+        focus_widget = QApplication.focusWidget()
+        if focus_widget is None:
+            return False
+
+        if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return True
+
+        if isinstance(focus_widget, QComboBox):
+            return focus_widget.isEditable()
+
+        parent = focus_widget.parentWidget()
+        while parent is not None:
+            if isinstance(parent, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+                return True
+            if isinstance(parent, QComboBox) and parent.isEditable():
+                return True
+            parent = parent.parentWidget()
+
+        return False
+
+    def _on_player_shortcut_toggle(self):
+        """处理空格键：播放/暂停。"""
+        if self._is_focus_on_text_or_navigation_widget():
+            return
+        self._audio_player.toggle_play_pause()
+
+    def _on_player_shortcut_seek(self, offset_ms: int):
+        """处理左右方向键：快进/快退。"""
+        if self._is_focus_on_text_or_navigation_widget():
+            return
+        self._audio_player.skip(offset_ms)
+
+    def _refresh_benchmark_gate_status(self):
+        """刷新标题栏性能闸门摘要。"""
+        snapshot = self._benchmark_gate_service.load_latest_snapshot()
+        self._benchmark_gate_snapshot = snapshot
+
+        if not hasattr(self, "benchmarkGateLabel"):
+            return
+
+        self._benchmark_gate_full_text = snapshot.summary
+        self.benchmarkGateLabel.setText(self._compact_benchmark_gate_text(snapshot))
+        self.benchmarkGateLabel.setToolTip(self._benchmark_gate_full_text)
+        self._set_title_status_color(self.benchmarkGateLabel, snapshot.status)
+        self._set_title_detail_button_state(self.benchmarkGateDetailBtn, snapshot.status)
+        self._sync_titlebar_status_tooltips()
+
+    def _show_benchmark_gate_detail(self):
+        """显示性能闸门报告详情。"""
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            self._refresh_benchmark_gate_status()
+            snapshot = self._benchmark_gate_snapshot
+            if snapshot is None:
+                return
+
+            lines = [self._benchmark_gate_full_text or snapshot.summary] + list(snapshot.detail_lines)
+            box = QMessageBox(self)
+            box.setWindowTitle("性能闸门报告详情")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText("\n".join(lines))
+            self._apply_theme_to_message_box(box)
+            box.exec()
+        except Exception as e:
+            from qfluentwidgets import InfoBar, InfoBarPosition
+
+            InfoBar.error(
+                title="无法读取性能闸门报告",
+                content=str(e),
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3500,
+            )
+
     def _on_media_ended(self):
         self.playerBar.set_playing(False)
         self.playerBar.set_position(0)
         self.waveformPreview.set_position(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_titlebar_compact_state()
 
     def _on_library_cleared(self):
         """
@@ -702,6 +1105,11 @@ class TranscriptionistWindow(FramelessWindow):
     
     def closeEvent(self, event):
         """关闭窗口时最小化到托盘（若托盘可用），否则正常退出"""
+        try:
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
+
         tray = getattr(self, '_tray_icon', None)
         if tray is not None and tray.isVisible():
             self.hide()

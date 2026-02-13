@@ -40,9 +40,15 @@ def get_resource_path(relative_path: Union[str, Path]) -> Path:
         relative_path = Path(relative_path)
     
     if getattr(sys, 'frozen', False):
-        # 打包后：使用 PyInstaller 的临时目录
-        # sys._MEIPASS 是 PyInstaller 解压文件的临时目录
-        base_path = Path(sys._MEIPASS) / "ui"
+        # 打包后：兼容 PyInstaller 与 Nuitka
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller onefile/onedir
+            base_path = Path(sys._MEIPASS) / "ui"
+        else:
+            # Nuitka standalone：资源通常位于可执行文件同级目录
+            exe_dir = Path(sys.executable).resolve().parent
+            nuitka_ui = exe_dir / "ui"
+            base_path = nuitka_ui if nuitka_ui.exists() else exe_dir
     else:
         # 开发环境：使用当前文件的父目录的父目录（ui/utils/ -> ui/）
         base_path = Path(__file__).parent.parent
@@ -125,7 +131,11 @@ def get_base_path() -> Path:
         Path: UI 模块的基础路径
     """
     if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS) / "ui"
+        if hasattr(sys, '_MEIPASS'):
+            return Path(sys._MEIPASS) / "ui"
+        exe_dir = Path(sys.executable).resolve().parent
+        nuitka_ui = exe_dir / "ui"
+        return nuitka_ui if nuitka_ui.exists() else exe_dir
     else:
         return Path(__file__).parent.parent
 
